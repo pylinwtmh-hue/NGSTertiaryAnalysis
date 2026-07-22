@@ -99,6 +99,8 @@ process ADD_DRAGEN_TAG {
 //   combine_phased.py 與二級同一支（scripts/combine_phased.py，只用 Python 標準庫）；
 //   在 ADD_DRAGEN_TAG 的 norm -m -any「之前」做（此時仍是 DRAGEN 原始表示、帶 PS）。
 //   由 params.combine_phased 開關（預設 true）。chrM 多半無 PS，實質不受影響。
+//   ⚠️ combine_py 以 staged path input 傳入（不用 ${params.scripts_dir}/… 直呼），這樣 nextflow
+//      會對 script「內容」計 hash → 改了 script 後 -resume 會正確重跑，不會沿用舊快取（與二級一致）。
 // ──────────────────────────────────────────────────────────────
 process COMBINE_DRAGEN {
 
@@ -108,6 +110,7 @@ process COMBINE_DRAGEN {
 
     input:
     tuple val(sample_id), path(dragen_vcf)
+    path combine_py
 
     output:
     tuple val(sample_id), path("${sample_id}.dragen.combined.vcf.gz"), emit: vcf
@@ -115,7 +118,7 @@ process COMBINE_DRAGEN {
     script:
     """
     # combine_phased.py 只用 Python 標準庫，讀 (bgzip) VCF、自帶 faidx（讀 \${ref_fasta}.fai）。
-    python3 ${params.scripts_dir}/combine_phased.py \\
+    python3 ${combine_py} \\
         --in ${dragen_vcf} \\
         --out ${sample_id}.dragen.combined.vcf \\
         --fasta ${params.ref_fasta} \\
@@ -135,7 +138,10 @@ workflow PREPARE_VCF_DRAGEN {
     main:
     // 先 combine（用 DRAGEN 原生 PS）再進 norm/tag；--combine_phased false 可關閉。
     if (params.combine_phased) {
-        COMBINE_DRAGEN(dragen_ch)
+        // 以 staged path input 傳入 combine_phased.py（content-hash → -resume 會偵測 script 變更）。
+        // 仍從 params.scripts_dir 取（維持三級「所有 python 腳本集中部署」慣例），只是改成 staged。
+        ch_combine_py = file("${params.scripts_dir}/combine_phased.py", checkIfExists: true)
+        COMBINE_DRAGEN(dragen_ch, ch_combine_py)
         ADD_DRAGEN_TAG(COMBINE_DRAGEN.out.vcf)
     } else {
         ADD_DRAGEN_TAG(dragen_ch)
