@@ -151,3 +151,36 @@ workflow PREPARE_VCF_DRAGEN {
     snv_ch  = ADD_DRAGEN_TAG.out.snv_ch
     mito_ch = ADD_DRAGEN_TAG.out.mito_ch
 }
+
+
+// ──────────────────────────────────────────────────────────────
+// PLOIDY_REPORT_DRAGEN：把 DRAGEN 原生 *.ploidy.vcf.gz 整理成「與二級同一套」的 ploidy QC
+//   摘要（性別 + 每 contig NDC + aneuploidy 警示）。warn-only。
+//   DRAGEN NDC 已對估計核型正規化（正常樣本含 chrX/chrY 皆 ~1.0），故 aneuploidy = NDC
+//   偏離 1.0（只信 FILTER=PASS 的 contig；chrM 跳過）；性別取 ##estimatedSexKaryotype。
+//   parse_dragen_ploidy.py 以 staged path input 傳入（content-hash → -resume 正確重跑）。
+// ──────────────────────────────────────────────────────────────
+process PLOIDY_REPORT_DRAGEN {
+
+    tag "${sample_id}"
+    label 'process_low'
+
+    container "${params.sif_dir}/tertiary_python_1.0.0.sif"
+
+    publishDir "${params.out_dir}/${sample_id}/00_prepare", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(ploidy_vcf)
+    path parse_py
+
+    output:
+    tuple val(sample_id), path("${sample_id}.ploidy_qc.txt"), emit: ploidy
+
+    script:
+    """
+    python3 ${parse_py} \\
+        --in ${ploidy_vcf} \\
+        --sample ${sample_id} \\
+        --out-qc ${sample_id}.ploidy_qc.txt
+    """
+}

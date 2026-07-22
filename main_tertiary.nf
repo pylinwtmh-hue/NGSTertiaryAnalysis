@@ -80,7 +80,7 @@ nextflow.enable.dsl = 2
 // ──────────────────────────────────────────────────────────────
 
 include { PREPARE_VCF        } from './modules/prepare_vcf.nf'
-include { PREPARE_VCF_DRAGEN } from './modules/prepare_vcf_dragen.nf'
+include { PREPARE_VCF_DRAGEN; PLOIDY_REPORT_DRAGEN } from './modules/prepare_vcf_dragen.nf'
 include { SNV_ANNOTATE       } from './modules/snv_annotation.nf'
 include { PARSE_VEP_CSQ      } from './modules/parse_csq.nf'
 include { ACMG_CLASSIFY      } from './modules/acmg_classifier.nf'
@@ -418,6 +418,21 @@ workflow {
 
         PREPARE_VCF_DRAGEN(input_ch)
         snv_ch = PREPARE_VCF_DRAGEN.out.snv_ch
+
+        // ── DRAGEN ploidy QC（性別 + aneuploidy，來自 DRAGEN 原生 ploidy.vcf）──
+        //   與二級 PLOIDY_CHECK 同一套 qc.txt 呈現；ploidy.vcf 不存在則 warn 後跳過。
+        ch_dragen_ploidy_py = file("${params.scripts_dir}/parse_dragen_ploidy.py")
+        dragen_ploidy_ch = Channel.fromList(samples).map { s ->
+            def pvcf = file("${s.input_dir}/vcf.gz/${s.sample_id}.ploidy.vcf.gz")
+            if (!pvcf.exists()) {
+                log.warn "[WARN] 找不到 DRAGEN ploidy VCF，跳過 ploidy QC：${pvcf}"
+                return null
+            }
+            tuple(s.sample_id, pvcf)
+        }
+        .filter { it != null }
+
+        PLOIDY_REPORT_DRAGEN(dragen_ploidy_ch, ch_dragen_ploidy_py)
 
         dragen_mito_ch = PREPARE_VCF_DRAGEN.out.mito_ch.map { sample_id, mito_vcf, mito_tbi ->
             tuple(sample_id, "dragen", mito_vcf, mito_tbi)
