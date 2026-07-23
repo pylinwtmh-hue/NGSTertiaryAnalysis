@@ -85,8 +85,7 @@ include { SNV_ANNOTATE       } from './modules/snv_annotation.nf'
 include { PARSE_VEP_CSQ      } from './modules/parse_csq.nf'
 include { ACMG_CLASSIFY      } from './modules/acmg_classifier.nf'
 include { MITO_ANNOTATE      } from './modules/mito_annotation.nf'
-include { STR_PREPARE_NCKUH  } from './modules/str_annotation.nf'
-include { STR_PARSE_NCKUH    } from './modules/str_annotation.nf'
+include { ANNOTATE_STR_NCKUH } from './modules/str_annotation.nf'
 include { STR_PARSE_DRAGEN   } from './modules/str_annotation.nf'
 include { ANNOTATE_CNV_SV_NCKUH  } from './modules/cnv_sv_annotation.nf'
 include { ANNOTATE_CNV_SV_DRAGEN } from './modules/cnv_sv_annotation.nf'
@@ -329,8 +328,7 @@ workflow {
         }
         .filter { it != null }
 
-        STR_PREPARE_NCKUH(nckuh_str_ch)
-        STR_PARSE_NCKUH(STR_PREPARE_NCKUH.out.str_prepared_ch)
+        ANNOTATE_STR_NCKUH(nckuh_str_ch)
 
         // ── NCKUH CNV/SV annotation（sub-workflow）────────────────
         //   CNV 依 seq_type 分流：WES→gCNV VCF、WGS→CNVkit .call.cns（先轉 BED）；
