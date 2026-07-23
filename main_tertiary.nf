@@ -81,12 +81,10 @@ nextflow.enable.dsl = 2
 
 include { PREPARE_VCF        } from './modules/prepare_vcf.nf'
 include { PREPARE_VCF_DRAGEN; PLOIDY_REPORT_DRAGEN } from './modules/prepare_vcf_dragen.nf'
-include { SNV_ANNOTATE       } from './modules/snv_annotation.nf'
-include { PARSE_VEP_CSQ      } from './modules/parse_csq.nf'
-include { ACMG_CLASSIFY      } from './modules/acmg_classifier.nf'
+include { ANNOTATE_SNV       } from './modules/annotate_snv.nf'
 include { MITO_ANNOTATE      } from './modules/mito_annotation.nf'
-include { ANNOTATE_STR_NCKUH } from './modules/str_annotation.nf'
-include { STR_PARSE_DRAGEN   } from './modules/str_annotation.nf'
+include { ANNOTATE_STR_NCKUH  } from './modules/str_annotation.nf'
+include { ANNOTATE_STR_DRAGEN } from './modules/str_annotation.nf'
 include { ANNOTATE_CNV_SV_NCKUH  } from './modules/cnv_sv_annotation.nf'
 include { ANNOTATE_CNV_SV_DRAGEN } from './modules/cnv_sv_annotation.nf'
 include { PGX_ANNOTATE           } from './modules/pgx_annotation.nf'
@@ -433,7 +431,7 @@ workflow {
         }
         .filter { it != null }
 
-        STR_PARSE_DRAGEN(dragen_str_ch)
+        ANNOTATE_STR_DRAGEN(dragen_str_ch)
 
         // ── DRAGEN CNV/SV annotation（sub-workflow）────────────────
         //   CNV：PASS + 去 copy-neutral → AnnotSV；SV：PASS + INS symbolic → AnnotSV。
@@ -478,15 +476,7 @@ workflow {
         .filter { it != null }
     }
 
-    // ── 以下完全共用（兩種 pipeline 相同）────────────────────
-
-    SNV_ANNOTATE(snv_ch)
-
-    PARSE_VEP_CSQ(
-        SNV_ANNOTATE.out.vep_ch,
-        SNV_ANNOTATE.out.pangolin_ch
-    )
-
+    // ── SNV annotation 尾段（sub-workflow：VEP → CSQ parse → ACMG，兩 pipeline 共用）──
     def clingen_hi_file = (params.clingen_hi_tsv && file(params.clingen_hi_tsv).exists())
         ? file(params.clingen_hi_tsv)
         : file("NO_FILE")
@@ -495,11 +485,7 @@ workflow {
         ? file(params.gene_moi_tsv)
         : file("NO_FILE")
 
-    ACMG_CLASSIFY(
-        PARSE_VEP_CSQ.out.full_tsv_ch,
-        clingen_hi_file,
-        gene_moi_file
-    )
+    ANNOTATE_SNV(snv_ch, clingen_hi_file, gene_moi_file)
 
     // ── PGx annotation（PharmCAT + StellarPGx）────────────────
     // --run_pgx false（預設）→ 跳過
