@@ -88,14 +88,8 @@ include { MITO_ANNOTATE      } from './modules/mito_annotation.nf'
 include { STR_PREPARE_NCKUH  } from './modules/str_annotation.nf'
 include { STR_PARSE_NCKUH    } from './modules/str_annotation.nf'
 include { STR_PARSE_DRAGEN   } from './modules/str_annotation.nf'
-include { CNVKIT_TO_BED          } from './modules/cnv_sv_annotation.nf'
-include { ANNOTSV_CNV_NCKUH_WES  } from './modules/cnv_sv_annotation.nf'
-include { ANNOTSV_CNV_NCKUH_WGS  } from './modules/cnv_sv_annotation.nf'
-include { ANNOTSV_SV_NCKUH       } from './modules/cnv_sv_annotation.nf'
-include { PREPARE_CNV_DRAGEN     } from './modules/cnv_sv_annotation.nf'
-include { PREPARE_SV_DRAGEN      } from './modules/cnv_sv_annotation.nf'
-include { ANNOTSV_CNV_DRAGEN     } from './modules/cnv_sv_annotation.nf'
-include { ANNOTSV_SV_DRAGEN      } from './modules/cnv_sv_annotation.nf'
+include { ANNOTATE_CNV_SV_NCKUH  } from './modules/cnv_sv_annotation.nf'
+include { ANNOTATE_CNV_SV_DRAGEN } from './modules/cnv_sv_annotation.nf'
 include { PGX_ANNOTATE           } from './modules/pgx_annotation.nf'
 
 // ──────────────────────────────────────────────────────────────
@@ -338,44 +332,35 @@ workflow {
         STR_PREPARE_NCKUH(nckuh_str_ch)
         STR_PARSE_NCKUH(STR_PREPARE_NCKUH.out.str_prepared_ch)
 
-        // ── NCKUH CNV：依 seq_type 分流 WES / WGS ────────────────
-        def seq_types = samples.collect { it.seq_type }.unique()
-
-        if (seq_types.contains("WES")) {
-            nckuh_cnv_wes_ch = Channel.fromList(samples)
-                .filter { s -> s.seq_type == "WES" }
-                .map { s ->
-                    def vcf = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.gcnv.vcf.gz")
-                    def tbi = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.gcnv.vcf.gz.tbi")
-                    if (!vcf.exists()) {
-                        log.warn "[WARN] 找不到 gCNV VCF，跳過：${vcf}"
-                        return null
-                    }
-                    tuple(s.sample_id, vcf, tbi)
+        // ── NCKUH CNV/SV annotation（sub-workflow）────────────────
+        //   CNV 依 seq_type 分流：WES→gCNV VCF、WGS→CNVkit .call.cns（先轉 BED）；
+        //   SV→Delly（WES+WGS 共用）。無對應樣本時該 channel 為空 → 對應 process 0 task，
+        //   不需再用 if (seq_types.contains(...)) 包起來。
+        nckuh_cnv_wes_ch = Channel.fromList(samples)
+            .filter { s -> s.seq_type == "WES" }
+            .map { s ->
+                def vcf = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.gcnv.vcf.gz")
+                def tbi = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.gcnv.vcf.gz.tbi")
+                if (!vcf.exists()) {
+                    log.warn "[WARN] 找不到 gCNV VCF，跳過：${vcf}"
+                    return null
                 }
-                .filter { it != null }
+                tuple(s.sample_id, vcf, tbi)
+            }
+            .filter { it != null }
 
-            ANNOTSV_CNV_NCKUH_WES(nckuh_cnv_wes_ch)
-        }
-
-        if (seq_types.contains("WGS")) {
-            nckuh_cnvkit_ch = Channel.fromList(samples)
-                .filter { s -> s.seq_type == "WGS" }
-                .map { s ->
-                    def cns = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.call.cns")
-                    if (!cns.exists()) {
-                        log.warn "[WARN] 找不到 CNVkit .call.cns，跳過：${cns}"
-                        return null
-                    }
-                    tuple(s.sample_id, cns)
+        nckuh_cnvkit_ch = Channel.fromList(samples)
+            .filter { s -> s.seq_type == "WGS" }
+            .map { s ->
+                def cns = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.call.cns")
+                if (!cns.exists()) {
+                    log.warn "[WARN] 找不到 CNVkit .call.cns，跳過：${cns}"
+                    return null
                 }
-                .filter { it != null }
+                tuple(s.sample_id, cns)
+            }
+            .filter { it != null }
 
-            CNVKIT_TO_BED(nckuh_cnvkit_ch)
-            ANNOTSV_CNV_NCKUH_WGS(CNVKIT_TO_BED.out.cnvkit_bed_ch)
-        }
-
-        // ── NCKUH SV（Delly，WES + WGS 共用）────────────────────
         nckuh_sv_ch = Channel.fromList(samples).map { s ->
             def vcf = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.delly.vcf.gz")
             def tbi = file("${s.input_dir}/05_cnv_sv/${s.sample_id}.delly.vcf.gz.tbi")
@@ -387,7 +372,7 @@ workflow {
         }
         .filter { it != null }
 
-        ANNOTSV_SV_NCKUH(nckuh_sv_ch)
+        ANNOTATE_CNV_SV_NCKUH(nckuh_cnv_wes_ch, nckuh_cnvkit_ch, nckuh_sv_ch)
 
         // ── NCKUH BAM channel（PGx 全樣本，含 WES + WGS）────────
         // WGS：StellarPGx + OptiType + GATK gVCF
@@ -452,7 +437,8 @@ workflow {
 
         STR_PARSE_DRAGEN(dragen_str_ch)
 
-        // ── DRAGEN CNV ────────────────────────────────────────
+        // ── DRAGEN CNV/SV annotation（sub-workflow）────────────────
+        //   CNV：PASS + 去 copy-neutral → AnnotSV；SV：PASS + INS symbolic → AnnotSV。
         dragen_cnv_ch = Channel.fromList(samples).map { s ->
             def vcf = file("${s.input_dir}/vcf.gz/${s.sample_id}.cnv.vcf.gz")
             if (!vcf.exists()) {
@@ -463,10 +449,6 @@ workflow {
         }
         .filter { it != null }
 
-        PREPARE_CNV_DRAGEN(dragen_cnv_ch)
-        ANNOTSV_CNV_DRAGEN(PREPARE_CNV_DRAGEN.out.cnv_filtered_ch)
-
-        // ── DRAGEN SV ─────────────────────────────────────────
         dragen_sv_ch = Channel.fromList(samples).map { s ->
             def vcf = file("${s.input_dir}/vcf.gz/${s.sample_id}.sv.vcf.gz")
             if (!vcf.exists()) {
@@ -477,8 +459,7 @@ workflow {
         }
         .filter { it != null }
 
-        PREPARE_SV_DRAGEN(dragen_sv_ch)
-        ANNOTSV_SV_DRAGEN(PREPARE_SV_DRAGEN.out.sv_filtered_ch)
+        ANNOTATE_CNV_SV_DRAGEN(dragen_cnv_ch, dragen_sv_ch)
 
         // ── DRAGEN BAM channel（PGx 全樣本，含 WES + WGS）────────
         // DRAGEN 輸出 BAM 路徑依版本可能不同，嘗試兩個慣用路徑
