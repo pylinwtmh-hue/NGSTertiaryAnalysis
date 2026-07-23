@@ -87,7 +87,7 @@ include { ANNOTATE_STR_NCKUH  } from './modules/str_annotation.nf'
 include { ANNOTATE_STR_DRAGEN } from './modules/str_annotation.nf'
 include { ANNOTATE_CNV_SV_NCKUH  } from './modules/cnv_sv_annotation.nf'
 include { ANNOTATE_CNV_SV_DRAGEN } from './modules/cnv_sv_annotation.nf'
-include { PGX_ANNOTATE           } from './modules/pgx_annotation.nf'
+include { PGX_ANNOTATE; PGX_DRAGEN_CONCORDANCE } from './modules/pgx_annotation.nf'
 
 // ──────────────────────────────────────────────────────────────
 // Sample sheet 解析
@@ -531,5 +531,26 @@ workflow {
             pgx_wes_bam_ch.mix(pgx_wes_ch),
             MITO_ANNOTATE.out.mito_tsv_ch.ifEmpty(Channel.empty())
         )
+
+        // ── DRAGEN：把 DRAGEN 原生 PGx 判讀（targeted.json）交叉註記進 pgx.tsv 的 NOTES ──
+        //   路徑：{input_dir}/other/{sample_id}/germline_seq/{sample_id}.targeted.json
+        //   找不到就 warn 後跳過（該樣本保留基礎版 pgx.tsv，不報錯）。欄位不變。
+        if (pipeline_type == 'dragen') {
+            ch_cmp_py = file("${params.scripts_dir}/compare_dragen_pgx.py")
+            dragen_targeted_ch = Channel.fromList(samples).map { s ->
+                def tj = file("${s.input_dir}/other/${s.sample_id}/germline_seq/${s.sample_id}.targeted.json")
+                if (!tj.exists()) {
+                    log.warn "[WARN] 找不到 DRAGEN targeted.json，跳過 PGx 交叉註記：${tj}"
+                    return null
+                }
+                tuple(s.sample_id, tj)
+            }
+            .filter { it != null }
+
+            PGX_DRAGEN_CONCORDANCE(
+                PGX_ANNOTATE.out.pgx_tsv_ch.join(dragen_targeted_ch),
+                ch_cmp_py
+            )
+        }
     }
 }

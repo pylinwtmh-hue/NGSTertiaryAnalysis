@@ -825,3 +825,39 @@ workflow PGX_ANNOTATE {
     emit:
     pgx_tsv_ch = PGX_PARSE.out.pgx_tsv_ch
 }
+
+// ──────────────────────────────────────────────────────────────
+// PGX_DRAGEN_CONCORDANCE（僅 DRAGEN）：把 DRAGEN 原生 targeted.json 的 PGx 判讀交叉註記進
+//   pgx.tsv 的 NOTES 欄（欄位不變）。同 → "DRAGEN 一致: <raw>"、異 → "不一致"、命名系統
+//   不同 → "未比對"，且一律附上 DRAGEN 原始 genotype 供人工查閱。找不到 targeted.json 的
+//   樣本不會進來（main 已 filter + warn）。本 process 依賴 PGX_PARSE 輸出（嚴格下游），
+//   發布的 pgx.tsv 取代基礎版本。
+// ──────────────────────────────────────────────────────────────
+process PGX_DRAGEN_CONCORDANCE {
+
+    label 'process_low'
+
+    container "${params.sif_dir}/tertiary_python_1.0.0.sif"
+
+    containerOptions "${params.apptainer_base_opts}"
+
+    publishDir "${params.out_dir}/${sample_id}/07_pgx", mode: 'copy'
+
+    input:
+    // pgx_in 以別名 staged，避免與輸出的 ${sample_id}.pgx.tsv 撞名
+    tuple val(sample_id), path(pgx_in, stageAs: "input.pgx.tsv"), path(targeted_json)
+    path cmp_py
+
+    output:
+    tuple val(sample_id), path("${sample_id}.pgx.tsv"), emit: pgx_tsv_ch
+
+    script:
+    """
+    echo "[PGX_DRAGEN_CONCORDANCE] ${sample_id}：DRAGEN targeted.json → pgx.tsv NOTES 交叉註記" >&2
+    python3 ${cmp_py} \\
+        --pgx         input.pgx.tsv \\
+        --dragen-json ${targeted_json} \\
+        --sample      ${sample_id} \\
+        --output      ${sample_id}.pgx.tsv
+    """
+}
