@@ -450,6 +450,17 @@ AnnotSV 輸出兩種行（`Annotation_mode` 欄位）：
 | NOTES | 補充說明（heteroplasmy AF、ClinVar sig 等）|
 | EVIDENCE_STRENGTH | 整體證據強度（`Strong` / `Moderate` 等）|
 
+> **DRAGEN 交叉註記（僅 DRAGEN 樣本，v3.5）：** `NOTES` 欄會附上 DRAGEN 原生 PGx 判讀
+> （`other/{sample}/germline_seq/{sample}.targeted.json`）與我們的比對，格式
+> `DRAGEN <判定>: <DRAGEN 原始 genotype>`：
+> - `一致`：正規化後與我們的 diplotype 相同（含落在 DRAGEN 模糊多重解 `;` 候選集內）；
+> - `不一致`：同命名系統但不同（如 CYP2D6、DPYD）→ 建議人工複核；
+> - `未比對`：命名系統不同（star vs HGVS/rs），不下判定、僅附 DRAGEN 原文。
+>
+> reference 跨寫法（`*1`／`Reference`／`B(wildtype)`）視為相同；DRAGEN 沒有的基因（如 HLA）不註記。
+> **欄位不變**，只是把 DRAGEN 結果寫進既有的 `NOTES`。找不到 `targeted.json` → 該樣本保留原
+> `NOTES`、不報錯。
+
 #### CPIC Level A 基因清單
 
 | 基因 | Outside caller | 主要臨床意義 |

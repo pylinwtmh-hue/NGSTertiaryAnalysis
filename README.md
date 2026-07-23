@@ -650,6 +650,11 @@ could not annotate.
   IMPLICATION CPIC_LEVEL DPWG_LEVEL OUTSIDE_CALLER MTRN1_RISK NOTES EVIDENCE_STRENGTH`. Covers CPIC
   Level A genes: CYP2D6, CYP2C19, CYP2C9, DPYD, TPMT, NUDT15, SLCO1B1, HLA-A, HLA-B, UGT1A1, G6PD,
   MT-RNR1 (via mito pipeline), IFNL3, CACNA1S, RYR1.
+  - *(DRAGEN only)* `NOTES` additionally carries a cross-check against DRAGEN's native PGx calls
+    (`other/{sample}/germline_seq/{sample}.targeted.json`): per gene, `DRAGEN 一致/不一致/未比對: <DRAGEN
+    genotype>` (concordant / differs-same-notation / different-notation-not-judged). Reference notations
+    (`*1`, `Reference`, `B(wildtype)`) are normalized; DRAGEN's ambiguous `;`-separated diplotypes match
+    if ours is among the candidates; genes DRAGEN doesn't call (e.g. HLA) are left untouched. Columns unchanged.
 - **`{SAMPLE_ID}.stellarpgx.tsv`** (WGS only) — `GENE DIPLOTYPE ACTIVITY_SCORE PHENOTYPE SOURCE` (CYP2D6).
 - **`{SAMPLE_ID}.optitype.tsv`** (WGS only) — `GENE ALLELE_1 ALLELE_2 SOURCE` (HLA typing).
 - **`{SAMPLE_ID}.outside_calls.tsv`** — PharmCAT outside-calls input; **`.pharmcat.report.json`** — PharmCAT's full report.

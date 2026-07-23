@@ -915,3 +915,17 @@ hg38 的 HLA reads 分散在三處：
 - NDC 語意與二級 mosdepth `ploidy_check.py` 統一（正規化到估計核型的期望，~1.0 = 正常）。
 - 驗證：VAL-10 → estimated `XX` / `sex_check: OK`。
 
+### DRAGEN PGx 交叉註記（compare_dragen_pgx.py + PGX_DRAGEN_CONCORDANCE，僅 DRAGEN）
+
+- 目的：把 DRAGEN 原生 PGx 判讀（`other/{sample}/germline_seq/{sample}.targeted.json` 的
+  `locusAnnotations` + `cyp2d6`/`cyp2b6`）交叉比對到我們的 `pgx.tsv`，寫進 `NOTES`（**欄位不變**）：
+  `DRAGEN 一致 / 不一致 / 未比對: <DRAGEN 原始 genotype>`。
+- 正規化：reference-like（`Reference`/`wildtype`/`ref`/`*1`/`B(reference)`/`B(wildtype)`）→ `REF`；
+  star allele 取排序集合；DRAGEN `;` 模糊多重解 → 我們的 diplotype 落在任一候選即「一致」；
+  命名系統不同（star vs HGVS/rs）→ `未比對`（不妄下判定）。DRAGEN 沒有／我們沒有的基因不動。
+- 位置：`PGX_DRAGEN_CONCORDANCE` 收在 `PGX_ANNOTATE` sub-workflow 內（`dragen_targeted_ch` 第 4 個
+  take，非 DRAGEN 傳空 channel → 0 task）；為 `PGX_PARSE` 嚴格下游，發布的 pgx.tsv 取代 base 版。
+- 驗證（VAL-10）：一致 10（含 UGT1A1 模糊候選、G6PD `B(reference)`↔`B(wildtype)`、CACNA1S/RYR1/
+  MT-RNR1 reference）、不一致 2（CYP2D6 結構型排列、DPYD 我們 Indeterminate vs DRAGEN 解出 `*6`）、
+  HLA-A/B 因 DRAGEN 無此基因不動。
+
