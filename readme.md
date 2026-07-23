@@ -1,4 +1,4 @@
-# 三級分析 Pipeline 開發筆記（v3.4）
+# 三級分析 Pipeline 開發筆記（v3.5）
 
 **負責人：** 林伯昱（p88124019@gs.ncku.edu.tw）
 **最後更新：** 2026-06-15
@@ -15,6 +15,7 @@
 6. [結果驗證](#結果驗證)
 7. [PGx Module 建置記錄](#pgx-module-建置記錄)
 8. [踩雷記錄（完整版）](#踩雷記錄)
+9. [v3.5 更新記錄](#v35-更新記錄)
 
 ---
 
@@ -51,17 +52,18 @@ apptainer pull --disable-cache \
 ```
 /data/pylin1991/nf-containers/
 ├── NGStertiary/1_0_0/
-│   ├── main_tertiary.nf               ✅ v3.4
-│   ├── nextflow_tertiary.config       ✅ v3.4
+│   ├── main_tertiary.nf               ✅ v3.5（依 pipeline_type 建 channel → 組合 sub-workflow）
+│   ├── nextflow_tertiary.config       ✅ v3.5
 │   ├── modules/
 │   │   ├── prepare_vcf.nf             ✅ NCKUH ensemble VCF 前處理
-│   │   ├── prepare_vcf_dragen.nf      ✅ DRAGEN VCF 前處理（chrM 分流）
+│   │   ├── prepare_vcf_dragen.nf      ✅ DRAGEN VCF 前處理（chrM 分流）+ PLOIDY_REPORT_DRAGEN
 │   │   ├── snv_annotation.nf          ✅ VEP 115 + Pangolin
-│   │   ├── parse_csq.nf               ✅ transcript 選取 + TSV（60欄）
+│   │   ├── parse_csq.nf               ✅ transcript 選取 + TSV（61 欄，含 STRAND_BIAS）
 │   │   ├── acmg_classifier.nf         ✅ ACMG（ClinGen SVI 2022）
+│   │   ├── annotate_snv.nf            ✅ v3.5 SNV 尾段 sub-workflow（SNV_ANNOTATE→PARSE_VEP_CSQ→ACMG）
 │   │   ├── mito_annotation.nf         ✅ mtDNA annotation
-│   │   ├── str_annotation.nf          ✅ STRchive threshold 分類
-│   │   ├── cnv_sv_annotation.nf       ✅ AnnotSV × 5 processes
+│   │   ├── str_annotation.nf          ✅ STRchive 分類 + ANNOTATE_STR_{NCKUH,DRAGEN} sub-workflow
+│   │   ├── cnv_sv_annotation.nf       ✅ AnnotSV × 5 processes + ANNOTATE_CNV_SV_{NCKUH,DRAGEN} sub-workflow
 │   │   └── pgx_annotation.nf          ✅ v3.5（PharmCAT + StellarPGx + OptiType + GATK gVCF + MT-RNR1）
 │   ├── scripts/
 │   │   ├── add_callers_tag.py
@@ -74,6 +76,7 @@ apptainer pull --disable-cache \
 │   │   ├── parse_mito_vcf.py
 │   │   ├── parse_str_vcf.py
 │   │   ├── prepare_sv_dragen.py
+│   │   ├── parse_dragen_ploidy.py       ✅ v3.5（DRAGEN ploidy.vcf → ploidy_qc.txt，NDC 與二級統一）
 │   │   ├── acmg_classifier.py
 │   │   ├── parse_pgx_report.py        ✅ v3.4（PharmCAT JSON → pgx.tsv）
 │   │   ├── build_outside_calls.py     ✅ v3.4（StellarPGx + OptiType → outside calls）
@@ -849,7 +852,7 @@ hg38 的 HLA reads 分散在三處：
 - **MANE summary 確認**：`MANE.GRCh38.v1.5.summary.txt.gz` 中 SLC37A4 的 MANE Select 是 NM_001164277.2 / ENST00000642844，對應的 contig 是 NW_009646203.1
 - **修法（v3.2）**：`pick_transcripts_for_output()` 按基因分組，每個基因選代表 transcript，再從所有代表中保留所有 MANE 和比 MANE 更嚴重的 non-MANE
 - **MANE_ALL 欄位移除**：新邏輯每個 transcript 各自一行，不需要 JSON 彙總
-- **輸出欄位數**：61 欄 → 60 欄（移除 MANE_ALL）
+- **輸出欄位數**：61 欄 → 60 欄（移除 MANE_ALL）→ 61 欄（v3.5 新增 STRAND_BIAS，欄 24）
 
 ### Transcript Picking（parse_mito_vcf.py）
 
@@ -874,4 +877,41 @@ hg38 的 HLA reads 分散在三處：
 
 - LOFTEE 的 `gerp_dist.pl` 有 bug，`loftee_path` 直接與檔名拼接（無 `/`）
 - 解法：用 `--bind` 把 gerp bw 直接掛載至 `/opt/vep/Plugins/gerp_...bw`
+
+---
+
+## v3.5 更新記錄
+
+### Sub-workflow 重構（main_tertiary.nf）
+
+把 CNV/SV、STR、SNV 尾段的「flat channel + 裸 process」鏈包成 sub-workflow，與二級一致：
+
+- `ANNOTATE_CNV_SV_NCKUH`（gCNV[WES] / CNVkit→BED[WGS] + Delly SV）、`ANNOTATE_CNV_SV_DRAGEN`
+  （filter → AnnotSV）→ 皆定義在 `cnv_sv_annotation.nf`
+- `ANNOTATE_STR_NCKUH`（PREPARE→PARSE）、`ANNOTATE_STR_DRAGEN`（單 process，對稱包起來）→ `str_annotation.nf`
+- `ANNOTATE_SNV`（VEP→CSQ→ACMG，NCKUH/DRAGEN 共用）→ 新檔 `annotate_snv.nf`（跨三個 module，故獨立成檔）
+- NCKUH CNV 的 WES/WGS `if (seq_types.contains(...))` 條件移除：改成無條件建 channel，空 channel = 0 task
+  （語意相同，DAG 更完整）。`MITO_ANNOTATE`、`PLOIDY_REPORT_DRAGEN` 單 process 維持裸呼叫。
+
+### STRAND_BIAS 欄位（parse_vep_csq.py，欄 24）
+
+- 依 INFO/FS（FisherStrand）+ INFO/SOR 判股偏；germline 只標記不硬刪。
+- `PASS` / `WARN(FS=..,SOR=..)`（GATK 門檻 SNV FS>60/SOR>3.0、indel FS>200/SOR>10.0）；
+  `.` = 無 FS/SOR（DeepVariant-only 位點）→ 人工複核。DRAGEN/HC 位點有 FS/SOR。
+
+### DRAGEN combined-record「AD 消失」修復（combine_phased.py）
+
+- **症狀**：DRAGEN 走 `COMBINE_DRAGEN`（combine_phased.py，用原生 PS）合併 cis compound 後，combined MNV
+  只剩 `GT:PS`，`AD/DP/VAF` 全掉成 `.`（VAL-58 chr17:80260571、VAL-10 145k+ 筆）。
+- **修法**：combined record 改為**繼承 anchor（cluster 內最寬的 biallelic record）的完整 FORMAT**，只覆寫
+  `GT`/`PS`；四種情況（重建出 2-ALT、無 biallelic anchor、mixed ploidy、chrM haploid）直接 passthrough。
+- **驗證（2026-07，結案）**：VAL-10 重跑 → `03_acmg` 的 `AD_DV` 5,940,465 / 5,940,563 有值（僅 98 筆
+  來源資料本身無 AD）。二級 `scripts/combine_phased.py` 與本 repo 逐位元組相同，md5 需一致。
+
+### DRAGEN ploidy QC（PLOIDY_REPORT_DRAGEN + parse_dragen_ploidy.py）
+
+- 讀 DRAGEN 原生 `{sample}.ploidy.vcf.gz` → `00_prepare/{sample}.ploidy_qc.txt`
+  （性別核型 + 每 contig NDC + aneuploidy 警示）；找不到 ploidy.vcf 則 warn 後跳過。
+- NDC 語意與二級 mosdepth `ploidy_check.py` 統一（正規化到估計核型的期望，~1.0 = 正常）。
+- 驗證：VAL-10 → estimated `XX` / `sex_check: OK`。
 
