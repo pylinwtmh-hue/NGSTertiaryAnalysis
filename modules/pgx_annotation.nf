@@ -728,6 +728,7 @@ workflow PGX_ANNOTATE {
     pgx_wes_vcf_ch  // WES 有 BAM：tuple(sid, ptype, vcf, tbi, bam, bai)
                     // WES 無 BAM：tuple(sid, ptype, vcf, tbi)
     mito_tsv_ch     // tuple(sample_id, mito_tsv)                                    ← 全樣本
+    dragen_targeted_ch  // tuple(sid, targeted.json)：DRAGEN 原生 PGx 判讀；非 DRAGEN 傳 Channel.empty()
 
     main:
 
@@ -822,8 +823,20 @@ workflow PGX_ANNOTATE {
 
     PGX_PARSE(parse_input_ch)
 
+    // ── DRAGEN：交叉註記 DRAGEN 原生 PGx 判讀進 NOTES（只有 targeted.json 存在的樣本會 join 進來；
+    //    非 DRAGEN 的 dragen_targeted_ch 為空 → 0 task）。concordance 版取代 base 版 pgx.tsv。
+    ch_cmp_py = file("${params.scripts_dir}/compare_dragen_pgx.py")
+    PGX_DRAGEN_CONCORDANCE(
+        PGX_PARSE.out.pgx_tsv_ch.join(dragen_targeted_ch),
+        ch_cmp_py
+    )
+    // 最終 pgx.tsv：有做 concordance 的樣本用 concordance 版，其餘用 base 版
+    ch_pgx_final = PGX_PARSE.out.pgx_tsv_ch
+        .join(PGX_DRAGEN_CONCORDANCE.out.pgx_tsv_ch, remainder: true)
+        .map { vals -> tuple(vals[0], (vals.size() > 2 && vals[2]) ? vals[2] : vals[1]) }
+
     emit:
-    pgx_tsv_ch = PGX_PARSE.out.pgx_tsv_ch
+    pgx_tsv_ch = ch_pgx_final
 }
 
 // ──────────────────────────────────────────────────────────────
