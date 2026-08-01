@@ -91,8 +91,9 @@ VCF (nckuh / dragen)                    BAM (WGS only, optional)
 |-------------|-----|-----|-----|------|
 | Local (dev) | R9 9950X 16c | RTX PRO 6000 96GB | 128GB | Development & testing |
 | DGM Server | Xeon w7-3565X 32c | RTX 2000 Ada 16GB | 125GB | Clinical deployment |
+| DGX-2 | Xeon Platinum 8168 48c | V100 × 6 | 1.5TB | Batch processing |
 
-> GPU is only required for Pangolin splice scoring (`use_gpu_pangolin = true`). All other steps are CPU-only.
+> GPU is only required for Pangolin splice scoring (`use_gpu_pangolin = true`). All other steps are CPU-only, so setting it to `false` costs speed but nothing else.
 
 ---
 
@@ -667,6 +668,7 @@ could not annotate.
 |---------|--------|-------|
 | `local` | Development machine (16c) | `process_high` = 16 CPUs |
 | `dgm` | DGM Server (32c) | `process_high` = 32 CPUs |
+| `dgx` | DGX-2 (48c, V100 × 6) | `process_high` = 48 CPUs; binds `/datalake_Intermediate,/datalake_Raw,/raid`; shares the secondary pipeline's `ref_dir` and container directory |
 
 ---
 
