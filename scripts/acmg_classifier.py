@@ -279,7 +279,58 @@ EXPECTED_COLUMNS = [
     "HGNC_ID",                                                       # 60  ★ v3.1
 ]
 
-NEW_COLUMNS = ["ACMG_CRITERIA", "ACMG_SCORE", "ACMG_CLASS", "ACMG_NOTES"]
+NEW_COLUMNS = ["ACMG_CRITERIA", "ACMG_SCORE", "ACMG_CLASS", "ACMG_NOTES",
+               "CLINGEN_AGREEMENT"]
+
+
+# ──────────────────────────────────────────────────────────────
+# 與 ClinGen VCEP 專家判讀的一致性對照（★ 純比對，不影響 ACMG 計分）
+# ──────────────────────────────────────────────────────────────
+# ClinGen SVI 2018 建議不要用 PP5/BP6（把他人判讀當成證據），否則變成循環論證，
+# 因此本 pipeline 未實作 PP5/BP6；ERepo 的專家判讀只用來「對照」我們的自動判讀結果，
+# 讓審閱者一眼看出哪些變異與專家小組結論不同、值得優先人工複核。
+_CLASS_CANON = {
+    "pathogenic": "P",
+    "likely pathogenic": "LP", "likely_pathogenic": "LP",
+    "uncertain significance": "VUS", "vus": "VUS",
+    "variant of uncertain significance": "VUS",
+    "likely benign": "LB", "likely_benign": "LB",
+    "benign": "B",
+}
+_DIRECTION = {"P": "path", "LP": "path", "VUS": "vus", "LB": "benign", "B": "benign"}
+
+
+def _canon_class(value: str) -> str | None:
+    """把我們與 ERepo 的分類字串正規化成 P / LP / VUS / LB / B；無法對應回 None。"""
+    s = (value or "").strip().lower()
+    if not s or s == ".":
+        return None
+    if s in _CLASS_CANON:
+        return _CLASS_CANON[s]
+    # ERepo 可能出現 "Pathogenic (moderate penetrance)" 等變體 → 取最長的前綴比對
+    for key in sorted(_CLASS_CANON, key=len, reverse=True):
+        if s.startswith(key):
+            return _CLASS_CANON[key]
+    return None
+
+
+def clingen_agreement(our_class: str, vcep_class: str) -> str:
+    """
+    回傳：
+      "."            未被 VCEP 判讀（或無法解析）→ 無從比較
+      AGREE          與專家判讀同一級
+      DIFFER_TIER    方向相同、強度不同（如我們 LP、專家 P）→ 通常可接受
+      DIFFER         方向不同（含一方為 VUS）→ 建議人工複核
+    """
+    ours = _canon_class(our_class)
+    theirs = _canon_class(vcep_class)
+    if ours is None or theirs is None:
+        return "."
+    if ours == theirs:
+        return "AGREE"
+    if _DIRECTION[ours] == _DIRECTION[theirs]:
+        return "DIFFER_TIER"
+    return "DIFFER"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -793,6 +844,7 @@ def process_tsv(
 
     n_total = n_p = n_lp = n_vus = n_lb = n_b = 0
     criteria_counts: dict[str, int] = {}
+    agreement_counts: dict[str, int] = {}
 
     with opener_in(input_path, "rt") as fin, open(output_path, "w") as fout:
 
@@ -827,11 +879,20 @@ def process_tsv(
                 for crit in result["ACMG_CRITERIA"].split(","):
                     criteria_counts[crit] = criteria_counts.get(crit, 0) + 1
 
+            # 與 ClinGen VCEP 專家判讀比對（欄位不存在時為 "."，不影響上面的計分結果）
+            agreement = clingen_agreement(
+                result["ACMG_CLASS"],
+                row.get("CLINGEN_VCEP_CLASS", "."),
+            )
+            if agreement != ".":
+                agreement_counts[agreement] = agreement_counts.get(agreement, 0) + 1
+
             fout.write("\t".join(fields + [
                 result["ACMG_CRITERIA"],
                 result["ACMG_SCORE"],
                 result["ACMG_CLASS"],
                 result["ACMG_NOTES"],
+                agreement,
             ]) + "\n")
 
     print(f"\n[acmg_classifier] 完成，共 {n_total:,} 個 variant", file=sys.stderr)
@@ -843,6 +904,17 @@ def process_tsv(
     print(f"\n  ── Criteria 觸發次數 ──", file=sys.stderr)
     for crit, cnt in sorted(criteria_counts.items(), key=lambda x: -x[1]):
         print(f"  {crit:<25} : {cnt:>6,}", file=sys.stderr)
+
+    # ClinGen VCEP 對照摘要（只有提供 ERepo lookup 時才會有數字）
+    if agreement_counts:
+        n_cmp = sum(agreement_counts.values())
+        print(f"\n  ── 與 ClinGen VCEP 專家判讀比對（{n_cmp:,} 個變異有專家判讀）──",
+              file=sys.stderr)
+        for label, desc in (("AGREE", "同一級"),
+                            ("DIFFER_TIER", "方向相同、強度不同"),
+                            ("DIFFER", "方向不同 → 建議人工複核")):
+            cnt = agreement_counts.get(label, 0)
+            print(f"  {label:<12}（{desc}）: {cnt:>6,}", file=sys.stderr)
 
 
 # ══════════════════════════════════════════════════════════════════
