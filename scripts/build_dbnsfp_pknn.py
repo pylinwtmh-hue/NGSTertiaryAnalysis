@@ -74,10 +74,14 @@ build_dbnsfp_pknn.py
 """
 
 import argparse
+import csv
 import gzip
 import os
 import sys
 from glob import glob
+
+# P-KNN CSV 有欄位長度極大的情況（引號內含長字串），放寬 csv 模組的欄位上限
+csv.field_size_limit(10 * 1024 * 1024)
 
 
 def load_pknn_chrom(pknn_dir: str, chrom: str) -> dict:
@@ -91,11 +95,17 @@ def load_pknn_chrom(pknn_dir: str, chrom: str) -> dict:
         return {}
 
     pknn = {}
-    with open(files[0], "r") as f:
-        f.readline()  # skip header
-        for line in f:
-            parts = line.rstrip("\n").split(",")
+    n_short = n_badllr = 0
+    # ⚠️ 必須用 csv.reader 而非 line.split(",")：P-KNN CSV 有些欄位是「引號包住、內含逗號」
+    #    的值（例如 "Pathogenic,_no_conflicts"）。naive 切割會讓那些行多出好幾欄、欄位整體
+    #    位移，第 21 欄（LLR）就會拿到像 `_no_conflicts"` 這種字串 → float() 失敗 → 整筆
+    #    被靜默跳過。實測 chr1 有 314 筆因此遺失 LLR。csv.reader 會正確處理引號。
+    with open(files[0], "r", newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)          # skip header
+        for parts in reader:
             if len(parts) < 21:
+                n_short += 1
                 continue
             pos = parts[1].strip()
             ref = parts[3].strip()
@@ -103,10 +113,12 @@ def load_pknn_chrom(pknn_dir: str, chrom: str) -> dict:
             llr_str = parts[20].strip()
 
             if not llr_str or llr_str in (".", "", "nan", "NA"):
+                n_badllr += 1
                 continue
             try:
                 llr = float(llr_str)
             except ValueError:
+                n_badllr += 1
                 continue
 
             key = (pos, ref, alt)
@@ -114,6 +126,9 @@ def load_pknn_chrom(pknn_dir: str, chrom: str) -> dict:
             if key not in pknn or abs(llr) > abs(pknn[key]):
                 pknn[key] = llr
 
+    if n_short or n_badllr:
+        print(f"  chr{chrom} P-KNN 跳過：欄數不足 {n_short:,} 筆、LLR 無法解析 {n_badllr:,} 筆",
+              file=sys.stderr)
     return pknn
 
 
