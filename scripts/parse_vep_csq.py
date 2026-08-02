@@ -779,11 +779,17 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
             else:
                 cv_varid, cv_omim, cv_rs = ".", ".", "."
 
-            # ClinGen ERepo（VCEP 專家判讀）以 ClinVar Variation ID 對照；查無則填 "."
-            if clingen_erepo and cv_varid != "." and cv_varid in clingen_erepo:
-                cg_class, cg_criteria, cg_panel = clingen_erepo[cv_varid]
-            else:
-                cg_class, cg_criteria, cg_panel = ".", ".", "."
+            # ClinGen ERepo（VCEP 專家判讀）對照：先用 ClinVar Variation ID，
+            # 查不到再用 GRCh38 座標（ERepo 約 5% 的判讀沒有 ClinVar ID，僅有座標）。
+            cg_class, cg_criteria, cg_panel = ".", ".", "."
+            if clingen_erepo:
+                cg_hit = None
+                if cv_varid != ".":
+                    cg_hit = clingen_erepo.get(cv_varid)
+                if cg_hit is None:
+                    cg_hit = clingen_erepo.get(lookup_key)
+                if cg_hit is not None:
+                    cg_class, cg_criteria, cg_panel = cg_hit
 
             # rsID 和 ClinVar 從第一個 transcript 取（variant-level annotation）
             first_tx = picked_txs[0][0]

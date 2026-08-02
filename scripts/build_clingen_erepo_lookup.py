@@ -40,7 +40,30 @@ import csv
 import gzip
 import io
 import json
+import re
 import sys
+
+# ──────────────────────────────────────────────────────────────
+# GRCh38 RefSeq accession → 染色體
+# ──────────────────────────────────────────────────────────────
+# ERepo 的 HGVS Expressions 欄同時列出 NCBI36 / GRCh37 / GRCh38 三種座標
+# （例如 NC_000007.12 / .13 / .14），必須只取 GRCh38 那一個版本，否則會拿到舊組裝的座標。
+GRCH38_ACCESSION = {
+    "NC_000001.11": "chr1",  "NC_000002.12": "chr2",  "NC_000003.12": "chr3",
+    "NC_000004.12": "chr4",  "NC_000005.10": "chr5",  "NC_000006.12": "chr6",
+    "NC_000007.14": "chr7",  "NC_000008.11": "chr8",  "NC_000009.12": "chr9",
+    "NC_000010.11": "chr10", "NC_000011.10": "chr11", "NC_000012.12": "chr12",
+    "NC_000013.11": "chr13", "NC_000014.9":  "chr14", "NC_000015.10": "chr15",
+    "NC_000016.10": "chr16", "NC_000017.11": "chr17", "NC_000018.10": "chr18",
+    "NC_000019.10": "chr19", "NC_000020.11": "chr20", "NC_000021.9":  "chr21",
+    "NC_000022.11": "chr22", "NC_000023.11": "chrX",  "NC_000024.10": "chrY",
+    "NC_012920.1":  "chrM",
+}
+
+# 只解析「單純置換」：g.<pos><REF>><ALT>（REF/ALT 為鹼基序列）。
+# del / dup / ins 的 HGVS g. 寫法沒有明確的 REF/ALT，無法在沒有參考序列的情況下組出
+# chr:pos:ref:alt，故不解析（會被計入 coord_unparsed）。
+_SUB_RE = re.compile(r"^(NC_\d+\.\d+):g\.(\d+)([ACGTacgt]+)>([ACGTacgt]+)$")
 
 
 def _open_text(path):
@@ -84,6 +107,13 @@ def detect_columns(headers):
                   "clinvar_variation_id", "variation"),
         prefer_any=("clinvar", "variation id"),
         exclude_any=("allele registry", "caid", "vci", "interpretation id"),
+    )
+    # HGVS 運算式（沒有 ClinVar ID 時，用來取 GRCh38 座標當備援 key）
+    cols["hgvs"] = _pick(
+        headers,
+        must_any=("hgvs",),
+        prefer_any=("expression",),
+        exclude_any=(),
     )
     # 判讀結論
     cols["class"] = _pick(
@@ -145,6 +175,23 @@ def _clean(v):
     return s if s else "."
 
 
+def coord_key_from_hgvs(hgvs_field):
+    """
+    從 HGVS Expressions 欄取 GRCh38 的置換座標，組成 'chr7:140801532:A:G'。
+    這是給「沒有 ClinVar Variation Id」的專家判讀用的備援 key（實測約佔 5%）。
+    只處理置換；del/dup/ins 回傳 None。
+    """
+    for expr in str(hgvs_field or "").split(","):
+        m = _SUB_RE.match(expr.strip())
+        if not m:
+            continue
+        acc, pos, ref, alt = m.groups()
+        chrom = GRCH38_ACCESSION.get(acc)
+        if chrom:
+            return "%s:%s:%s:%s" % (chrom, pos, ref.upper(), alt.upper())
+    return None
+
+
 def iter_records(path):
     """逐筆吐出 dict（自動判斷 JSON / TSV / CSV）。"""
     with _open_text(path) as f:
@@ -164,7 +211,11 @@ def iter_records(path):
                 if isinstance(rec, dict):
                     yield _flatten(rec)
             return
-        delim = "\t" if head.count("\t") >= head.count(",") else ","
+        # 分隔符只依「header 那一行」判斷：ERepo 的 HGVS Expressions 欄含大量逗號
+        # （一個變異列出 20+ 種 HGVS），若拿資料列一起數會誤判成 CSV，整個 header 變成單一欄。
+        header_line = f.readline()
+        f.seek(0)
+        delim = "\t" if header_line.count("\t") >= header_line.count(",") else ","
         for rec in csv.DictReader(f, delimiter=delim):
             yield rec
 
@@ -187,7 +238,7 @@ def _flatten(d, prefix="", out=None):
 
 
 def build(in_path, out_path):
-    n_in = n_out = n_no_id = n_retracted = 0
+    n_in = n_out = n_no_id = n_retracted = n_coord = 0
     cols = None
     seen = {}
 
@@ -209,10 +260,14 @@ def build(in_path, out_path):
             n_retracted += 1
             continue
 
+        # key 優先用 ClinVar Variation ID；缺少時（實測約 5%）退回 GRCh38 座標
         vid = _clean_varid(rec.get(cols["variation_id"]))
         if not vid:
-            n_no_id += 1
-            continue
+            vid = coord_key_from_hgvs(rec.get(cols["hgvs"])) if cols.get("hgvs") else None
+            if not vid:
+                n_no_id += 1
+                continue
+            n_coord += 1
 
         row = (
             _clean(rec.get(cols["class"])),
@@ -229,14 +284,16 @@ def build(in_path, out_path):
             n_out += 1
 
     with gzip.open(out_path, "wt") as w:
-        w.write("variation_id\tclass\tcriteria\tpanel\tdate\tn_records\n")
-        for vid in sorted(seen, key=lambda x: int(x)):
-            c, crit, panel, date, n = seen[vid]
-            w.write("%s\t%s\t%s\t%s\t%s\t%d\n" % (vid, c, crit, panel, date, n))
+        # key = ClinVar Variation ID（純數字）或 GRCh38 座標 chr:pos:ref:alt（備援）
+        w.write("key\tclass\tcriteria\tpanel\tdate\tn_records\n")
+        for k in sorted(seen, key=lambda x: (0, int(x), "") if x.isdigit() else (1, 0, x)):
+            c, crit, panel, date, n = seen[k]
+            w.write("%s\t%s\t%s\t%s\t%s\t%d\n" % (k, c, crit, panel, date, n))
 
     print("[build_clingen_erepo] 讀入 %d 筆，輸出 %d 個變異"
-          "（已撤回略過 %d 筆、無 ClinVar ID 略過 %d 筆）"
-          % (n_in, n_out, n_retracted, n_no_id), file=sys.stderr)
+          "（其中 %d 個用 GRCh38 座標備援 key；已撤回略過 %d 筆、"
+          "無 ClinVar ID 且無法取得座標略過 %d 筆）"
+          % (n_in, n_out, n_coord, n_retracted, n_no_id), file=sys.stderr)
     multi = sum(1 for v in seen.values() if v[4] > 1)
     if multi:
         print("[build_clingen_erepo] 其中 %d 個變異有多個 VCEP 判讀（只保留第一筆，"
