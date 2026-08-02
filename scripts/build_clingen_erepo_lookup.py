@@ -106,14 +106,26 @@ def detect_columns(headers):
         prefer_any=("panel", "vcep"),
         exclude_any=("id",),
     )
-    # 判讀日期
+    # 判讀日期：ERepo 同時有 Approval Date 與 Published Date，優先取專家小組核准日
     cols["date"] = _pick(
         headers,
         must_any=("date", "evaluated", "released"),
-        prefer_any=("evaluated", "released"),
+        prefer_any=("approval", "evaluated"),
+        exclude_any=(),
+    )
+    # 是否已撤回（ERepo 的 Retracted 欄）；撤回的判讀不納入對照
+    cols["retracted"] = _pick(
+        headers,
+        must_any=("retracted", "withdrawn"),
+        prefer_any=(),
         exclude_any=(),
     )
     return cols
+
+
+def _is_retracted(value) -> bool:
+    """ERepo Retracted 欄可能是 true/false、yes/no、1/0 或空白。"""
+    return str(value or "").strip().lower() in ("true", "yes", "y", "1", "t")
 
 
 def _clean_varid(v):
@@ -175,7 +187,7 @@ def _flatten(d, prefix="", out=None):
 
 
 def build(in_path, out_path):
-    n_in = n_out = n_no_id = 0
+    n_in = n_out = n_no_id = n_retracted = 0
     cols = None
     seen = {}
 
@@ -184,13 +196,18 @@ def build(in_path, out_path):
         if cols is None:
             cols = detect_columns(list(rec.keys()))
             print("[build_clingen_erepo] 偵測到的欄位對應：", file=sys.stderr)
-            for role in ("variation_id", "class", "criteria", "panel", "date"):
+            for role in ("variation_id", "class", "criteria", "panel", "date", "retracted"):
                 print("    %-13s -> %s" % (role, cols.get(role) or "(找不到)"), file=sys.stderr)
             if not cols.get("variation_id") or not cols.get("class"):
                 print("[ERROR] 找不到 ClinVar Variation ID 或 classification 欄位。"
                       "請把下載檔的 header 貼出來以便調整比對規則。\n"
                       "        現有欄名：%s" % list(rec.keys())[:40], file=sys.stderr)
                 sys.exit(1)
+
+        # 已撤回的專家判讀不納入對照（拿撤回的結論當基準會誤導審閱者）
+        if cols.get("retracted") and _is_retracted(rec.get(cols["retracted"])):
+            n_retracted += 1
+            continue
 
         vid = _clean_varid(rec.get(cols["variation_id"]))
         if not vid:
@@ -217,8 +234,9 @@ def build(in_path, out_path):
             c, crit, panel, date, n = seen[vid]
             w.write("%s\t%s\t%s\t%s\t%s\t%d\n" % (vid, c, crit, panel, date, n))
 
-    print("[build_clingen_erepo] 讀入 %d 筆，輸出 %d 個變異（無 ClinVar ID 略過 %d 筆）"
-          % (n_in, n_out, n_no_id), file=sys.stderr)
+    print("[build_clingen_erepo] 讀入 %d 筆，輸出 %d 個變異"
+          "（已撤回略過 %d 筆、無 ClinVar ID 略過 %d 筆）"
+          % (n_in, n_out, n_retracted, n_no_id), file=sys.stderr)
     multi = sum(1 for v in seen.values() if v[4] > 1)
     if multi:
         print("[build_clingen_erepo] 其中 %d 個變異有多個 VCEP 判讀（只保留第一筆，"
