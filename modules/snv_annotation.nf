@@ -132,10 +132,17 @@ process VEP_ANNOTATE {
     //   exomes+genomes 合併），parse_vep_csq.py 以 get_any() 相容兩種欄名。
     def academic   = params.academic_dbnsfp as boolean
     def dbnsfp_f   = academic ? params.dbnsfp_academic : params.dbnsfp
-    def dbnsfp_af  = academic ? "gnomAD4.1_joint_AF,gnomAD4.1_joint_EAS_AF"
-                              : "gnomAD_exomes_AF,gnomAD_exomes_EAS_AF"
-    def dbnsfp_extra = academic ? ",REVEL_score,MutPred2_score,MutPred2_pred,VEST4_score,CADD_phred"
-                                : ""
+    // ACMG 用的族群頻率：兩版都取 gnomAD 2.1.1 exomes，讓 PM2 的判讀基準不因換版而變。
+    //   4.9c 有「整體」欄位；5.3a 只保留 controls / non_neuro / non_cancer 三個子集，
+    //   取 non_cancer（約 118k，最接近整體的 ~125k；controls 僅約 60k 差距過大）。
+    def dbnsfp_af  = academic
+        ? "gnomAD2.1.1_exomes_non_cancer_AF,gnomAD2.1.1_exomes_non_cancer_EAS_AF"
+        : "gnomAD_exomes_AF,gnomAD_exomes_EAS_AF"
+    // 5.3a 額外抓的「參考用」欄位（不進 ACMG 計分）：新 in-silico 工具 + gnomAD 4.1。
+    def dbnsfp_extra = academic
+        ? ",REVEL_score,MutPred2_score,MutPred2_pred,VEST4_score,CADD_phred" +
+          ",gnomAD4.1_joint_AF,gnomAD4.1_joint_EAS_AF"
+        : ""
     """
     echo "[VEP_ANNOTATE] dbNSFP = ${dbnsfp_f}" >&2
 

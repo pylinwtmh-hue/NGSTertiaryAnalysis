@@ -633,6 +633,8 @@ OUTPUT_COLUMNS = [
     #   這些工具多為「學術免費、商業需另行授權」（CADD 尤其明確），故不放在預設路徑，
     #   以維持預設流程全部可商用的硬性限制。
     "REVEL", "MUTPRED2", "MUTPRED2_PRED", "VEST4", "CADD_PHRED",
+    # gnomAD 4.1 joint：★ 參考用，不進 ACMG 計分（ACMG 一律用上面的 2.1.1 欄位）
+    "GNOMAD41_JOINT_AF", "GNOMAD41_JOINT_EAS_AF",
     "DBNSFP_VERSION",               # 這批分數來自哪個 dbNSFP（4.9c / 5.3a）
     # ClinGen SVI PVS1 決策樹（Abou Tayoun 2018）所需的原始欄位
     "NMD",                          # VEP NMD plugin：是否逃過 nonsense-mediated decay
@@ -840,13 +842,19 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                 gnomad_g_eas_af    = get(picked_tx, "gnomADg_EAS_AF")
                 gnomad_e_af        = get(picked_tx, "gnomADe_AF")
                 gnomad_e_eas_af    = get(picked_tx, "gnomADe_EAS_AF")
-                # dbNSFP 版本間欄名不同：4.9c 用 gnomAD exomes（2.1.1 世代），
-                # 5.3a 改為 gnomAD 4.1 joint（exomes+genomes 合併，樣本數大得多）。
-                # 沿用同一組輸出欄位，實際來源由 DBNSFP_VERSION 標示。
+                # ACMG 用的族群頻率固定取 gnomAD 2.1.1 exomes，換 dbNSFP 版本不改判讀基準。
+                #   4.9c：gnomAD_exomes_*（整體）
+                #   5.3a：只有子集 → 取 non_cancer（最接近整體）
+                # 註：GNOMAD_E_AF_DBNSFP 目前未進 ACMG（純顯示）；GNOMAD_E_EAS_AF_DBNSFP
+                #     只在 AR/XL 的 PM2 作為 min_eas_af() 四個來源之一。
                 gnomad_e_af_db     = get_any(picked_tx, "gnomAD_exomes_AF",
-                                                        "gnomAD4.1_joint_AF")
+                                                        "gnomAD2.1.1_exomes_non_cancer_AF")
                 gnomad_e_eas_af_db = get_any(picked_tx, "gnomAD_exomes_EAS_AF",
-                                                        "gnomAD4.1_joint_EAS_AF")
+                                                        "gnomAD2.1.1_exomes_non_cancer_EAS_AF")
+                # gnomAD 4.1 joint（exomes+genomes，~80 萬人）：僅 5.3a 模式有值，
+                # 純參考欄位、不進 ACMG 計分，供審閱者對照新版族群頻率。
+                gnomad41_af     = get(picked_tx, "gnomAD4.1_joint_AF")
+                gnomad41_eas_af = get(picked_tx, "gnomAD4.1_joint_EAS_AF")
                 tg_eas_af          = get(picked_tx, "EAS_AF")
 
                 loftee        = get(picked_tx, "LoF")
@@ -944,6 +952,8 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                     "MUTPRED2_PRED":        get(picked_tx, "MutPred2_pred"),
                     "VEST4":                get(picked_tx, "VEST4_score"),
                     "CADD_PHRED":           get(picked_tx, "CADD_phred"),
+                    "GNOMAD41_JOINT_AF":     gnomad41_af,
+                    "GNOMAD41_JOINT_EAS_AF": gnomad41_eas_af,
                     "DBNSFP_VERSION":       dbnsfp_version,
                     "NMD":                  get(picked_tx, "NMD"),
                     "PROTEIN_POSITION":     get(picked_tx, "Protein_position"),
