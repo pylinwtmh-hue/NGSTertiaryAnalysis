@@ -95,8 +95,8 @@ apptainer pull --disable-cache \
 │   └── stellarpgx_repo/               ✅ git clone SBIMB/StellarPGx
 ├── tertiary_python_1.0.0.sif
 ├── vep_115.sif
-├── pangolin_1.0.0.sif                 ✅ 開發機 Blackwell/sm_120（cu128）
-├── pangolin_v100_1.0.0.sif            ✅ DGX-2 V100/sm_70（cu121）
+├── pangolin_1.0.0.sif                 ✅ local + dgm（cu128，sm_75…sm_120）
+├── pangolin_v100_1.0.0.sif            ✅ dgx（cu121，含 sm_70 = V100）
 ├── annotsv_3.5.10.sif
 ├── pharmcat_3.2.0.sif                 ✅ v3.3 新增
 ├── stellarpgx_graphtyper2.5.1.sif     ✅ v3.3 新增
@@ -197,7 +197,37 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 
 ### pangolin_1.0.0.sif ＋ pangolin_v100_1.0.0.sif（Version 1.0.6）
 
-**同一份 def 檔，改 `TARGET` 一行建出兩顆**（GPU 世代不同，見下方 §「兩台機器 → 兩顆容器」）。
+**同一份 def 檔，改 `TARGET` 一行建出兩顆。** GPU 世代不同、PyTorch wheel 的 arch list
+不相容，沒有 prebuilt wheel 能通吃（實測依據見下方 §「為什麼是兩顆容器」）。
+
+#### 📌 兩顆容器對照表（要查哪台用哪顆，看這裡）
+
+| | `pangolin_1.0.0.sif` | `pangolin_v100_1.0.0.sif` |
+|---|---|---|
+| def 的 `TARGET` | `blackwell` | `v100` |
+| PyTorch | `torch==2.7.0` **cu128** | `torch==2.5.1` **cu121** |
+| pip index | `download.pytorch.org/whl/cu128` | `download.pytorch.org/whl/cu121` |
+| 實測 arch flags | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120` | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` |
+| 必須有的 arch | `sm_120` | `sm_70` |
+| 用在哪些 profile | **`local`**（開發機 RTX PRO 6000 Blackwell）<br>**`dgm`**（DGM Server） | **`dgx`**（DGX-2 Tesla V100 ×6） |
+| 需要的驅動 | CUDA 12.x（不必 r580+） | CUDA 12.x（DGX-2 只有 12.2，cu121 ≤ 12.2 更保險）|
+
+- 切換機制：`nextflow_tertiary.config` 三個 profile 各自宣告 `params.pangolin_sif`，
+  `PANGOLIN_SCORE` 用 `container "${params.sif_dir}/${params.pangolin_sif}"`。
+  **只能寫在 profile 內**（全域 params 區塊在 `profiles` 之後，會蓋掉 profile 的值）。
+- **DGM 為什麼跟開發機共用 cu128 那顆**：DGM 原本跑舊的 cu130 容器就是正常的，
+  而 cu128 的 arch list（`sm_75…sm_120`）比 cu130（`sm_75 sm_80 sm_90 sm_100 sm_120`）
+  還寬，需要的驅動又更舊 → 跑得動 cu130 就一定跑得動 cu128。只有 V100 需要另一顆。
+- 分辨手上是哪一顆：`apptainer exec $SIF head -1 /opt/build_versions.txt`
+  → `# TARGET=blackwell required_arch=sm_120` 或 `# TARGET=v100 required_arch=sm_70`
+
+#### 版本沿革（三次嘗試，都留著當紀錄）
+
+| Version | torch | 結果 |
+|---------|-------|------|
+| 1.0.4 | `pip install torch`（**未 pin**，實際解析成 cu130）| 開發機正常 → 以為沒事；部署 DGX-2 才發現 V100 完全不能用（CUDA 13 已移除 Volta）|
+| 1.0.5 | `torch==2.5.1+cu121`（單一容器）| DGX-2 修好了，但**反過來把開發機弄壞**（cu121 沒有 sm_120）|
+| **1.0.6** | 兩顆：cu128 / cu121 | 一台一顆。中間試過用 cu128 通吃，被 `%test` 守門員以「缺 sm_70」擋下 |
 
 **已知踩雷：**
 
@@ -209,17 +239,19 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 | `map(int, ...)` crash on `Y`/`R`/`W` | hg38 部分座標含 IUPAC ambiguity code，`one_hot_encode` 只處理 A/C/G/T/N | `%post` patch 2：`re.sub(r'[^01234]', '0', seq)`（同 N，全零 encoding）|
 | Pangolin segfault（CSQ 過長） | WGS 的 CSQ 可達 270 KB，Pangolin parse 時爆掉 | module 內先 `bcftools annotate -x INFO/CSQ` |
 | Pangolin segfault（alt/random contig） | gencode DB 沒有 `chr*_alt` / `chr*_random` / `chrUn_*` 的 gene model | module 內 `grep -E '^#\|^chr([0-9]+\|[XYM])\t'` 只留標準染色體 |
-| **`RuntimeError: ... driver ... too old (found version 12020)`**（DGX-2） | `pip install torch` 沒有 pin，PyPI 預設 wheel 漂移成 cu130（CUDA 13.0），CUDA 13 已移除 Volta 且需驅動 r580+ | pin 到 **cu128**，見下方 §「一顆 sif 要跨 V100 + Blackwell」 |
-| **`CUDA error: no kernel image is available for execution on the device`**（開發機） | 反方向：cu121 的 wheel 只有 `sm_50…sm_90`，開發機 RTX PRO 6000 Blackwell 是 **sm_120** | 同上。單一 wheel 必須同時含 `sm_70` 與 `sm_120` |
+| **`RuntimeError: ... driver ... too old (found version 12020)`**（DGX-2） | `pip install torch` 沒有 pin，PyPI 預設 wheel 漂移成 cu130（CUDA 13.0），CUDA 13 已移除 Volta 且需驅動 r580+ | DGX-2 改用 **cu121** 容器（`pangolin_v100_1.0.0.sif`），見 §「為什麼是兩顆容器」 |
+| **`CUDA error: no kernel image is available for execution on the device`** | wheel 缺這張卡的 arch。兩個方向都發生過：cu121 沒有 `sm_120`（開發機爆）、cu128/cu130 沒有 `sm_70`（DGX-2 爆）| 一台一顆容器，由 `params.pangolin_sif` 切換。**沒有** prebuilt wheel 同時含兩者 |
 
-#### ⚠️ 兩台機器 → 兩顆容器（2026-08 定案）
+#### ⚠️ 為什麼是兩顆容器（2026-08 定案，含實測依據）
 
-這個 pipeline 有兩台目標機器，**GPU 差了三個世代**：
+這個 pipeline 有三台目標機器，但**只有兩個 GPU 世代分組** —— DGX-2 的 V100 自己一組，
+其餘（開發機、DGM）都是新世代，**差了三個世代**：
 
 | 機器 | GPU | compute capability | 容器 |
 |------|-----|-------------------|------|
-| DGX-2（production，`-profile dgx`） | Tesla V100 | **sm_70**（Volta）| `pangolin_v100_1.0.0.sif` |
+| DGX-2（production，`-profile dgx`） | Tesla V100 ×6 | **sm_70**（Volta）| `pangolin_v100_1.0.0.sif` |
 | 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）| `pangolin_1.0.0.sif` |
+| DGM Server（`-profile dgm`） | 型號未記錄，但原本跑 cu130 容器正常 → 屬新世代 | ≥ sm_75 | `pangolin_1.0.0.sif` |
 
 **為什麼不能一顆通吃（已實測確認）。** CUDA 工具鏈層面，12.8/12.9 是唯一同時支援
 sm_70（deprecated 但可編譯）與 sm_120（12.8 才有）的版本 —— ≤12.6 沒有 sm_120，
@@ -437,7 +469,7 @@ if required not in flags and required.replace("sm_", "compute_") not in flags:
              "       這台機器會噴 'no kernel image is available for execution "
              "on the device'。\n"
              "       確認 TARGET 與 pip 的 --index-url 是否對應；\n"
-             "       詳見 DEVELOPMENT_NOTES.md §「兩台機器 → 兩顆容器」。")
+             "       詳見 DEVELOPMENT_NOTES.md §「為什麼是兩顆容器」。")
 
 print(f"OK: {required} 在 arch flags 裡 -> {MACHINE.get(required, target)} 可用")
 PYEOF
@@ -1025,8 +1057,8 @@ grep "CYP2D6\|CYP2C9\|HLA\|GENE" \
 ### 傳送容器
 ```bash
 # vep_115.sif（約 5GB）
-# pangolin_1.0.0.sif / pangolin_v100_1.0.0.sif（依 DGM 的 GPU 世代決定用哪顆，
-#   在 nextflow_tertiary.config 的 dgm profile 設 pangolin_sif）
+# pangolin_1.0.0.sif（DGM 用這顆，cu128；原本跑 cu130 正常 → cu128 一定可以）
+#   ※ pangolin_v100_1.0.0.sif 只有 DGX-2 需要，DGM 用不到
 # tertiary_python_1.0.0.sif
 scp /data/pylin1991/nf-containers/*.sif \
     n101569@192.168.84.91:/home/pipeline/nextflow_containers/
@@ -1159,7 +1191,7 @@ apptainer exec $SIF python3 -c \
 #      arch flags 缺 sm_70 → 這顆不是 V100 版（很可能誤傳了開發機的 cu128 容器）。
 #      DGX-2 只能用 pangolin_v100_1.0.0.sif；第一行 TARGET 可以確認：
 apptainer exec $SIF head -1 /opt/build_versions.txt      # 期望 TARGET=v100
-#      見「容器建立 → Pangolin → 兩台機器 → 兩顆容器」。
+#      見「容器建立 → Pangolin → 為什麼是兩顆容器」。
 #      重建期間可先用 --use_gpu_pangolin false 走 CPU（結果相同，只影響速度）。
 
 # 3) GPU lock 腳本存在（與二級共用）
