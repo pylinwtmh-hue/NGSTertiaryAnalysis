@@ -3,6 +3,13 @@
 **負責人：** 林伯昱（p88124019@gs.ncku.edu.tw）
 **最後更新：** 2026-08-03
 
+> 這份是**內部開發紀錄**（環境、部署、踩雷記錄、驗證過程）。
+> 對外的使用說明在 `README.md`，給同事的操作手冊在 `tertiary_pipeline_guide.md`。
+>
+> 檔名原本是小寫的 `readme.md`，但 Windows 檔案系統不分大小寫，
+> 跟 `README.md` 撞名會讓 `git pull` / `git clone` 出錯，
+> 2026-08 改名為 `DEVELOPMENT_NOTES.md`。
+
 ---
 
 ## 目錄
