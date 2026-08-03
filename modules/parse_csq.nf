@@ -85,7 +85,7 @@ process PARSE_CSQ {
         --pangolin_vcf    ${pangolin_vcf} \\
         --clinvar_lookup  ${params.clinvar_lookup_tsv} \\
         --clingen_erepo   ${erepo} \\
-        --dbnsfp_version  ${params.academic_dbnsfp ? '5.3a' : '4.9c'} \\
+        --dbnsfp_version  ${params.academic_dbnsfp.toString().toLowerCase() == 'true' ? '5.3a' : '4.9c'} \\
         --sample_id       ${sample_id} \\
         --input_type      ${params.input_type ?: (params.pipeline_type == 'dragen' ? 'dragen' : 'ensemble')} \\
         --output_full     ${sample_id}.snv_indel.full.annotated.tsv \\

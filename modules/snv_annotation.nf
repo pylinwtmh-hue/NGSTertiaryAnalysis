@@ -130,7 +130,9 @@ process VEP_ANNOTATE {
     //   5.3a 的 P-KNN 覆蓋更完整（P-KNN 本來就是以 dbNSFP 5.3 產生）。
     //   族群頻率欄名在 5.3a 改了：gnomAD_exomes_* → gnomAD4.1_joint_*（gnomAD 4.1，
     //   exomes+genomes 合併），parse_vep_csq.py 以 get_any() 相容兩種欄名。
-    def academic   = params.academic_dbnsfp as boolean
+    // ⚠️ 不要用 `as boolean`：Groovy 對非空字串一律為 true，指令列傳 "--academic_dbnsfp false"
+    //    會被誤判成開啟。一律轉小寫字串比對。
+    def academic   = params.academic_dbnsfp.toString().toLowerCase() == 'true'
     def dbnsfp_f   = academic ? params.dbnsfp_academic : params.dbnsfp
     // ACMG 用的族群頻率：兩版都取 gnomAD 2.1.1 exomes，讓 PM2 的判讀基準不因換版而變。
     //   4.9c 有「整體」欄位；5.3a 只保留 controls / non_neuro / non_cancer 三個子集，

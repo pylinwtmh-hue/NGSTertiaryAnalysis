@@ -255,6 +255,10 @@ workflow {
     validate_databases()
 
     // ── 印出執行資訊 ──────────────────────────────────────────
+    // dbNSFP 依 --academic_dbnsfp 切換，banner 必須印「實際使用」的那一個
+    //   （評鑑需要能證明這批結果用了哪個版本的資料庫）。
+    def use_academic  = params.academic_dbnsfp.toString().toLowerCase() == 'true'
+    def dbnsfp_in_use = use_academic ? params.dbnsfp_academic : params.dbnsfp
     log.info """
     ╔══════════════════════════════════════════════════════╗
     ║         臨床三級分析 Pipeline  v1.0.0                ║
@@ -265,7 +269,8 @@ workflow {
     輸出目錄      : ${params.out_dir}
     容器目錄      : ${params.sif_dir}
     VEP cache     : ${params.vep_cache}
-    dbNSFP        : ${params.dbnsfp}
+    dbNSFP        : ${dbnsfp_in_use}
+    dbNSFP 模式   : ${use_academic ? '5.3a（--academic_dbnsfp 啟用：含 REVEL/MutPred2/VEST4/CADD 與 gnomAD4.1 參考欄）' : '4.9c（預設，全部工具可商用）'}
     ClinVar       : ${params.clinvar}
     ClinGen HI    : ${params.clingen_hi_tsv ?: '（未提供，PVS1 簡化版）'}
     Gene MOI      : ${params.gene_moi_tsv   ?: '（未提供，PM2 純 AF 模式）'}
