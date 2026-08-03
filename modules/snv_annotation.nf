@@ -224,7 +224,17 @@ gerp_bigwig:/opt/vep/Plugins/loftee_data/gerp_conservation_scores.homo_sapiens.G
 process PANGOLIN_SCORE {
     label 'process_gpu'
 
-    container "${params.sif_dir}/pangolin_1.0.0.sif"
+    // ── 容器依機器的 GPU 世代切換（params.pangolin_sif，每個 profile 都要宣告）──
+    //   Pangolin 用 PyTorch，而 PyTorch 的 prebuilt wheel 只包特定 compute
+    //   capability 的 kernel，跨 GPU 世代不相容（cubin 只在同一個 major 版本內
+    //   向前相容）。實測官方 wheel 的 arch list：
+    //     cu121 → sm_50…sm_90            （含 sm_70 = V100，無 sm_120）
+    //     cu128 → sm_75…sm_120           （含 sm_120 = Blackwell，**已砍 sm_70**）
+    //   → 沒有任何一顆 prebuilt wheel 同時涵蓋兩者，只能一台一顆容器：
+    //     pangolin_v100_1.0.0.sif → DGX-2 Tesla V100（sm_70），cu121
+    //     pangolin_1.0.0.sif      → 開發機 RTX PRO 6000 Blackwell（sm_120），cu128
+    //   建置方式與 arch 守門員見 DEVELOPMENT_NOTES.md「容器建立 → Pangolin」。
+    container "${params.sif_dir}/${params.pangolin_sif}"
 
     publishDir "${params.out_dir}/${sample_id}/02_pangolin", mode: 'copy'
 
