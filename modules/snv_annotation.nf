@@ -238,7 +238,27 @@ process PANGOLIN_SCORE {
           emit: pangolin_out
 
     script:
+    // ── GPU lock（DGX-2 共用機器）─────────────────────────────────────────
+    //   與二級分析同一套機制：gpu_lock.sh 搶下 N 張空閒 V100 並輸出可 eval 的環境變數，
+    //   trap EXIT 時以 gpu_unlock.sh 歸還（即使 process 失敗也會釋放）。
+    //   Apptainer 預設會把 host 環境變數帶進容器，故 CUDA_VISIBLE_DEVICES 會被 Pangolin
+    //   看見；這裡再明確 export 一次，避免 lock script 只設了 MY_GPUS。
+    //   非 DGX（local / dgm）use_gpu_lock=false → 走 config 既有的 GPU 設定，不插入此段。
+    def use_lock      = params.use_gpu_lock ?: false
+    def lock_script   = params.gpu_lock_script
+    def unlock_script = params.gpu_unlock_script
+    def num_gpus      = params.pangolin_num_gpus ?: 1
+    def lock_block = use_lock ? """
+    eval \$(bash ${lock_script} ${num_gpus})
+    export CUDA_VISIBLE_DEVICES=\${MY_GPUS}
+    echo "[PANGOLIN] ${sample_id} 取得 GPU \${MY_GPUS}" >&2
+    trap "bash ${unlock_script} \${MY_GPUS}; echo '[PANGOLIN] ${sample_id} 釋放 GPU \${MY_GPUS}' >&2" EXIT
+    """ : """
+    echo "[PANGOLIN] ${sample_id} 使用 config 指定的 GPU（未啟用 GPU lock）" >&2
     """
+    """
+    ${lock_block}
+
     # Step 1：從 VEP 輸出中篩選 splice candidate
     # bcftools view -h → 只取 header 行
     # bcftools view -H → 只取 variant 行，awk 篩 INFO 欄含 "splice" 字眼
