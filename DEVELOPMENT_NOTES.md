@@ -95,8 +95,8 @@ apptainer pull --disable-cache \
 │   └── stellarpgx_repo/               ✅ git clone SBIMB/StellarPGx
 ├── tertiary_python_1.0.0.sif
 ├── vep_115.sif
-├── pangolin_1.0.0.sif                 ✅ local（Blackwell sm_120）+ dgm（A2000 sm_86）
-├── pangolin_v100_1.0.0.sif            ✅ dgx（cu121，含 sm_70 = V100）
+├── pangolin_1.0.0.sif                 ✅ local 開發機專用（cu128，Blackwell sm_120）
+├── pangolin_v100_1.0.0.sif            ✅ production：dgm + dgx（cu121，sm_50…sm_90）
 ├── annotsv_3.5.10.sif
 ├── pharmcat_3.2.0.sif                 ✅ v3.3 新增
 ├── stellarpgx_graphtyper2.5.1.sif     ✅ v3.3 新增
@@ -209,19 +209,40 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 | pip index | `download.pytorch.org/whl/cu128` | `download.pytorch.org/whl/cu121` |
 | 實測 arch flags | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120` | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` |
 | 必須有的 arch | `sm_120` | `sm_70` |
-| 用在哪些 profile | **`local`**（開發機 RTX PRO 6000 Blackwell，sm_120）<br>**`dgm`**（DGM，RTX A2000，sm_86） | **`dgx`**（DGX-2 Tesla V100 ×6，sm_70） |
+| 用在哪些 profile | **`local`** 只有開發機（RTX PRO 6000 Blackwell，sm_120）<br>＝ 唯一被 GPU 世代逼著分家的一台 | **`dgm`**（RTX A2000，sm_86）<br>**`dgx`**（DGX-2 Tesla V100 ×6，sm_70）<br>＝ **兩台 production 共用這顆** |
 | 需要的驅動 | CUDA 12.x（不必 r580+） | CUDA 12.x（DGX-2 只有 12.2，cu121 ≤ 12.2 更保險）|
 
 - 切換機制：`nextflow_tertiary.config` 三個 profile 各自宣告 `params.pangolin_sif`，
   `PANGOLIN_SCORE` 用 `container "${params.sif_dir}/${params.pangolin_sif}"`。
   **只能寫在 profile 內**（全域 params 區塊在 `profiles` 之後，會蓋掉 profile 的值）。
-- **DGM（RTX A2000 = sm_86）兩顆都能跑**，所以不是限制條件：`sm_86` 同時在 cu121
-  （`sm_50…sm_90`）與 cu128（`sm_75…sm_120`）的 arch list 裡。目前跟開發機共用 cu128
-  那顆，少維護一條部署路徑；佐證是 DGM 原本跑舊的 cu130 容器就正常，而 cu128 的
-  arch list 比 cu130（`sm_75 sm_80 sm_90 sm_100 sm_120`）還寬、需要的驅動又更舊。
-  **只有 DGX-2 的 V100（sm_70）是真的只能用 cu121 那顆。**
+- **DGM（RTX A2000 = sm_86）兩顆都能跑**，技術上沒有限制：`sm_86` 同時在 cu121
+  （`sm_50…sm_90`）與 cu128（`sm_75…sm_120`）的 arch list 裡。
+  **但刻意讓 DGM 跟 DGX-2 用同一顆（cu121）** —— 理由是評鑑可追溯性，見下方 §。
+- **只有 DGX-2 的 V100（sm_70）與開發機的 Blackwell（sm_120）是真的被逼著分家。**
 - 分辨手上是哪一顆：`apptainer exec $SIF head -1 /opt/build_versions.txt`
   → `# TARGET=blackwell required_arch=sm_120` 或 `# TARGET=v100 required_arch=sm_70`
+
+#### 📋 為什麼 DGM 用 cu121 而不是 cu128（評鑑可追溯性）
+
+DGM 的 A2000 是 `sm_86`，**兩顆容器都跑得動**，所以這純粹是政策選擇。選 cu121 是為了
+讓評鑑時能講一句乾淨的話：
+
+> **所有 production 分析（DGM + DGX-2）使用同一顆容器映像。**
+
+若 DGM 用 cu128、DGX-2 用 cu121，就得額外論證「torch 2.5.1 與 2.7.0 產出的 Pangolin
+splice 分數等價」—— 那是要拿資料去證的事（同樣本兩台各跑一次、比對分數），
+為了省一次 rsync 而增加這種舉證責任並不划算。統一成一顆就完全不必談。
+
+開發機（Blackwell / `sm_120`）**必然是例外** —— cu121 沒有 sm_120，物理上不可能統一。
+但這不破壞上面那句聲明，因為開發機不產出臨床報告。完整說法是：
+
+> production 兩台（DGM、DGX-2）使用同一顆 cu121 容器；開發機因 GPU 世代限制
+> （Blackwell sm_120 不在 cu121 的 arch list 內）使用 cu128 容器，僅用於開發與測試，
+> 不產出臨床報告。
+
+⚠️ **連帶的驗證要求**：既然臨床報告在 production 產出，**驗證樣本也應該在 production
+容器上跑（或至少複跑一次）**。只在開發機（cu128）驗證、卻在 DGX-2（cu121）發報告，
+嚴格講驗證沒有涵蓋實際的 production stack —— 這正是評鑑會問的問題。
 
 #### 版本沿革（三次嘗試，都留著當紀錄）
 
@@ -253,7 +274,7 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 |------|-----|-------------------|------|
 | DGX-2（production，`-profile dgx`） | Tesla V100 ×6 | **sm_70**（Volta）| `pangolin_v100_1.0.0.sif` |
 | 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）| `pangolin_1.0.0.sif` |
-| DGM Server（`-profile dgm`） | RTX A2000（GA106，Ampere）| **sm_86** | `pangolin_1.0.0.sif` |
+| DGM Server（`-profile dgm`） | RTX A2000（GA106，Ampere）| **sm_86** | `pangolin_v100_1.0.0.sif`（刻意與 dgx 一致，見下）|
 
 **為什麼不能一顆通吃（已實測確認）。** CUDA 工具鏈層面，12.8/12.9 是唯一同時支援
 sm_70（deprecated 但可編譯）與 sm_120（12.8 才有）的版本 —— ≤12.6 沒有 sm_120，
@@ -506,17 +527,18 @@ conda activate base
 # ── 兩顆都要建。差別只有 def 檔裡的 TARGET 那一行 ────────────────────────
 # ⚠️ 不要加 --notest，%test 的 arch 守門員要在 build 階段生效
 
-# (A) 開發機用（TARGET=blackwell，cu128 / sm_120）
+# (A) 開發機專用（TARGET=blackwell，cu128 / sm_120）
 apptainer build /data/pylin1991/nf-containers/pangolin_1.0.0.sif /tmp/pangolin.def
 apptainer test  /data/pylin1991/nf-containers/pangolin_1.0.0.sif
 # 期望：OK: sm_120 在 arch flags 裡 -> 開發機 RTX PRO 6000 Blackwell 可用
 
-# (B) DGX-2 用（TARGET=v100，cu121 / sm_70）
+# (B) production 兩台共用：DGM + DGX-2（TARGET=v100，cu121 / sm_50…sm_90）
 sed -i 's/^    TARGET=blackwell$/    TARGET=v100/' /tmp/pangolin.def
 grep -n '^    TARGET=' /tmp/pangolin.def          # 確認真的改到了
 apptainer build /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif /tmp/pangolin.def
 apptainer test  /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif
 # 期望：OK: sm_70 在 arch flags 裡 -> DGX-2 Tesla V100 可用
+#   （守門員只驗最嚴格的 sm_70；DGM 的 sm_86 也在 cu121 的 arch list 內）
 
 # 分辨兩顆容器（TARGET 寫在第一行）
 apptainer exec /data/pylin1991/nf-containers/pangolin_1.0.0.sif      head -1 /opt/build_versions.txt
@@ -534,10 +556,15 @@ apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition
 
-# ── 2) 只把 V100 那顆傳到 DGX-2（不要傳 pangolin_1.0.0.sif 過去）───────
+# ── 2) 把 cu121 那顆傳到兩台 production（不要傳 pangolin_1.0.0.sif 過去）──
+#      DGX-2
 rsync -avz --progress \
     /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif \
     n101569@10.11.33.75:/datalake_Intermediate/pipeline/nextflow_containers/
+#      DGM
+rsync -avz --progress \
+    /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif \
+    n101569@192.168.84.91:/home/pipeline/nextflow_containers/
 
 # ── 3) DGX-2（V100 / sm_70）：用 pangolin_v100_1.0.0.sif ───────────────
 ssh n101569@10.11.33.75
@@ -546,7 +573,15 @@ apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True Tesla V100-SXM3-32GB
 
+# ── 3b) DGM（RTX A2000 / sm_86）：同一顆 pangolin_v100_1.0.0.sif ────────
+ssh n101569@192.168.84.91
+SIF=/home/pipeline/nextflow_containers/pangolin_v100_1.0.0.sif
+apptainer exec --nv $SIF python3 -c \
+    "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# 期望：cuda True NVIDIA RTX A2000
+
 # ── 4) 版本追溯（第一行是 TARGET，可確認拿到的是哪一顆）────────────────
+#      production 兩台印出來必須完全一樣 —— 這就是統一容器要拿去講的證據
 apptainer exec $SIF cat /opt/build_versions.txt
 ```
 
@@ -1174,9 +1209,10 @@ grep "CYP2D6\|CYP2C9\|HLA\|GENE" \
 ### 傳送容器
 ```bash
 # vep_115.sif（約 5GB）
-# pangolin_1.0.0.sif（DGM 用這顆，cu128。DGM 是 RTX A2000 = sm_86，
-#   cu121/cu128 兩顆都有 sm_86，共用 cu128 是為了少維護一條部署路徑）
-#   ※ pangolin_v100_1.0.0.sif 只有 DGX-2 的 V100 需要，DGM 用不到
+# pangolin_v100_1.0.0.sif（DGM 用這顆，cu121 —— 與 DGX-2 同一顆）
+#   DGM 是 RTX A2000 = sm_86，cu121/cu128 兩顆都跑得動；統一用 cu121 是為了
+#   評鑑能聲明「所有 production 使用同一顆容器」，見容器建立章節的說明。
+#   ※ pangolin_1.0.0.sif（cu128）只有開發機需要，不必傳到 DGM
 # tertiary_python_1.0.0.sif
 scp /data/pylin1991/nf-containers/*.sif \
     n101569@192.168.84.91:/home/pipeline/nextflow_containers/
