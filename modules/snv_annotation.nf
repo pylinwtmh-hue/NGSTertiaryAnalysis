@@ -101,9 +101,14 @@ process VEP_ANNOTATE {
     //
     // 注意：apptainer_base_opts 提供 --bind /scratch,/data 基礎掛載
     //       這裡在基礎上追加 loftee 相關的 bind
+    //   NMD.pm      → Ensembl 官方 NMD plugin（VEP_plugins repo），掛進 plugin 目錄。
+    //                 用來預測「提前終止密碼子是否會逃過 NMD」，是 ClinGen SVI PVS1
+    //                 決策樹的第一個分支。容器內 /opt/vep/Plugins 唯讀，故比照 gerp bw
+    //                 以單檔 bind 方式掛入，不需重建容器。
     containerOptions "${params.apptainer_base_opts} \
         --bind ${params.loftee_dir}:/opt/vep/Plugins/loftee_data \
-        --bind ${params.loftee_dir}/gerp_conservation_scores.homo_sapiens.GRCh38.bw:/opt/vep/Plugins/gerp_conservation_scores.homo_sapiens.GRCh38.bw"
+        --bind ${params.loftee_dir}/gerp_conservation_scores.homo_sapiens.GRCh38.bw:/opt/vep/Plugins/gerp_conservation_scores.homo_sapiens.GRCh38.bw \
+        --bind ${params.loftee_dir}/NMD.pm:/opt/vep/Plugins/NMD.pm"
 
     publishDir "${params.out_dir}/${sample_id}/01_vep", mode: 'copy'
 
@@ -151,6 +156,7 @@ process VEP_ANNOTATE {
         --hgvs \\
         --symbol \\
         --numbers \\
+        --total_length \\
         --canonical \\
         --biotype \\
         --tsl \\
@@ -182,6 +188,8 @@ conservation_file:/opt/vep/Plugins/loftee_data/loftee.sql,\\
 gerp_bigwig:/opt/vep/Plugins/loftee_data/gerp_conservation_scores.homo_sapiens.GRCh38.bw \\
         \\
         --plugin LoFtool,/opt/vep/Plugins/loftee_data/LoFtool_scores.txt \\
+        \\
+        --plugin NMD \\
         \\
         --custom file=${params.clinvar},short_name=ClinVar,format=vcf,type=exact,coords=0,fields=CLNSIG%CLNREVSTAT%CLNDN%CLNSIGCONF \\
         \\

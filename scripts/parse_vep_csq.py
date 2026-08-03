@@ -634,6 +634,9 @@ OUTPUT_COLUMNS = [
     #   以維持預設流程全部可商用的硬性限制。
     "REVEL", "MUTPRED2", "MUTPRED2_PRED", "VEST4", "CADD_PHRED",
     "DBNSFP_VERSION",               # 這批分數來自哪個 dbNSFP（4.9c / 5.3a）
+    # ClinGen SVI PVS1 決策樹（Abou Tayoun 2018）所需的原始欄位
+    "NMD",                          # VEP NMD plugin：是否逃過 nonsense-mediated decay
+    "PROTEIN_POSITION",             # Protein_position（--total_length → "123/456"），算截斷比例用
 ]
  
  
@@ -942,6 +945,8 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                     "VEST4":                get(picked_tx, "VEST4_score"),
                     "CADD_PHRED":           get(picked_tx, "CADD_phred"),
                     "DBNSFP_VERSION":       dbnsfp_version,
+                    "NMD":                  get(picked_tx, "NMD"),
+                    "PROTEIN_POSITION":     get(picked_tx, "Protein_position"),
                 }
 
                 row_str = "\t".join(row_dict[col] for col in OUTPUT_COLUMNS) + "\n"
