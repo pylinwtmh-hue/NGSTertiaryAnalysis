@@ -428,7 +428,7 @@ apptainer exec --bind ${TERTIARY_DIR} ${SIF_DIR}/tertiary_python_1.0.0.sif     p
 ```bash
 mkdir -p ${TERTIARY_DIR}/pangolin && cd ${TERTIARY_DIR}/pangolin
 wget -c https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.annotation.gtf.gz
-apptainer exec --bind ${TERTIARY_DIR} ${SIF_DIR}/pangolin_1.0.0.sif     create_db.py     --filter MANE_Select,MANE_Plus_Clinical,Ensembl_canonical     gencode.v47.annotation.gtf.gz
+apptainer exec --bind ${TERTIARY_DIR} ${SIF_DIR}/pangolin_cu130_1.0.0.sif     create_db.py     --filter MANE_Select,MANE_Plus_Clinical,Ensembl_canonical     gencode.v47.annotation.gtf.gz
 ```
 
 #### STRchive
@@ -579,6 +579,7 @@ nextflow -c nextflow_tertiary.config run main_tertiary.nf \
 | `--run_pgx_hla` | `true` | Enable OptiType HLA-A/B typing (requires BAM, WGS only) |
 | `--academic_dbnsfp` | `false` | Use dbNSFP 5.3a instead of 4.9c and additionally pull REVEL, MutPred2, VEST4 and CADD_phred. Those are free for academic use but need a commercial licence (CADD explicitly), so the default path stays on 4.9c and remains commercially usable. ACMG keeps scoring against gnomAD 2.1.1 in both modes. |
 | `--use_gpu_pangolin` | `true` | Pangolin is the only GPU step; set `false` to run it on CPU (slower, same results) on a host without a GPU |
+| `--pangolin_sif` | per profile | Which Pangolin container to use. PyTorch's prebuilt wheels only ship kernels for selected compute capabilities, and no single wheel covers both Volta and Blackwell, so there are two images: `pangolin_cu121_1.0.0.sif` (arch `sm_50`–`sm_90`, includes the DGX-2's V100 `sm_70`) for `dgm` and `dgx`, and `pangolin_cu130_1.0.0.sif` (`sm_120`) for the Blackwell dev box. Declared in each profile — never in the global `params` block, which is evaluated after `profiles` and would override them. |
 
 ---
 

@@ -95,8 +95,8 @@ apptainer pull --disable-cache \
 │   └── stellarpgx_repo/               ✅ git clone SBIMB/StellarPGx
 ├── tertiary_python_1.0.0.sif
 ├── vep_115.sif
-├── pangolin_1.0.0.sif                 ✅ local 開發機專用（cu128，Blackwell sm_120）
-├── pangolin_v100_1.0.0.sif            ✅ production：dgm + dgx（cu121，sm_50…sm_90）
+├── pangolin_cu130_1.0.0.sif            ✅ local 開發機專用（Blackwell sm_120，需驅動 r580+）
+├── pangolin_cu121_1.0.0.sif            ✅ production：dgm + dgx（sm_50…sm_90，含 V100 sm_70）
 ├── annotsv_3.5.10.sif
 ├── pharmcat_3.2.0.sif                 ✅ v3.3 新增
 ├── stellarpgx_graphtyper2.5.1.sif     ✅ v3.3 新增
@@ -195,53 +195,55 @@ apptainer build /data/pylin1991/nf-containers/vep_115.sif /tmp/vep_115.def
 apptainer test /data/pylin1991/nf-containers/vep_115.sif
 ```
 
-### pangolin_1.0.0.sif ＋ pangolin_v100_1.0.0.sif（Version 1.0.6）
+### pangolin_cu130_1.0.0.sif ＋ pangolin_cu121_1.0.0.sif（Version 1.0.6）
 
 **同一份 def 檔，改 `TARGET` 一行建出兩顆。** GPU 世代不同、PyTorch wheel 的 arch list
 不相容，沒有 prebuilt wheel 能通吃（實測依據見下方 §「為什麼是兩顆容器」）。
 
 #### 📌 兩顆容器對照表（要查哪台用哪顆，看這裡）
 
-| | `pangolin_1.0.0.sif` | `pangolin_v100_1.0.0.sif` |
+| | `pangolin_cu130_1.0.0.sif` | `pangolin_cu121_1.0.0.sif` |
 |---|---|---|
-| def 的 `TARGET` | `blackwell` | `v100` |
-| PyTorch | `torch==2.7.0` **cu128** | `torch==2.5.1` **cu121** |
-| pip index | `download.pytorch.org/whl/cu128` | `download.pytorch.org/whl/cu121` |
-| 實測 arch flags | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120` | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` |
+| 角色 | **開發機專用**（開發／測試）| **production**（產出臨床報告）|
+| def 的 `TARGET` | `cu130` | `cu121` |
+| PyTorch | cu130（版本待第一次 build 後 pin）| `torch==2.5.1` **cu121** |
+| pip index | `download.pytorch.org/whl/cu130` | `download.pytorch.org/whl/cu121` |
 | 必須有的 arch | `sm_120` | `sm_70` |
-| 用在哪些 profile | **`local`** 只有開發機（RTX PRO 6000 Blackwell，sm_120）<br>＝ 唯一被 GPU 世代逼著分家的一台 | **`dgm`**（RTX A2000，sm_86）<br>**`dgx`**（DGX-2 Tesla V100 ×6，sm_70）<br>＝ **兩台 production 共用這顆** |
-| 需要的驅動 | CUDA 12.x（不必 r580+） | CUDA 12.x（DGX-2 只有 12.2，cu121 ≤ 12.2 更保險）|
+| 實測 arch flags | （cu128 曾實測 `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120`；cu130 建完請補上）| `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` |
+| 用在哪些 profile | **`local`** 只有開發機（RTX PRO 6000 Blackwell，sm_120）<br>＝ 唯一被 GPU 世代逼著分家的一台 | **`dgm`** + **`dgx`**（DGX-2 Tesla V100 ×6，sm_70）<br>＝ **兩台 production 共用這顆** |
+| 需要的驅動 | **r580+**（CUDA 13.0 的硬要求）| CUDA 12.1（DGX-2 只有 12.2，cu121 ≤ 12.2 更保險）|
 
 - 切換機制：`nextflow_tertiary.config` 三個 profile 各自宣告 `params.pangolin_sif`，
   `PANGOLIN_SCORE` 用 `container "${params.sif_dir}/${params.pangolin_sif}"`。
   **只能寫在 profile 內**（全域 params 區塊在 `profiles` 之後，會蓋掉 profile 的值）。
-- **DGM（RTX A2000 = sm_86）兩顆都能跑**，技術上沒有限制：`sm_86` 同時在 cu121
-  （`sm_50…sm_90`）與 cu128（`sm_75…sm_120`）的 arch list 裡。
-  **但刻意讓 DGM 跟 DGX-2 用同一顆（cu121）** —— 理由是評鑑可追溯性，見下方 §。
-- **只有 DGX-2 的 V100（sm_70）與開發機的 Blackwell（sm_120）是真的被逼著分家。**
+- 檔名直接標 CUDA 變體（`cu121` / `cu130`），因為**差異的本質就是 CUDA 變體**，
+  不是機器型號 —— 舊名 `pangolin_v100_*` 在 DGM 也用同一顆之後就名不符實了。
+- **開發機用 cu130 是刻意的**：Blackwell 是 CUDA 13 世代的原生目標，理論上 13.x 的
+  cuBLAS/cuDNN sm_120 kernel 更貼合這張卡。**只有開發機能這樣選** —— cu130 沒有
+  `sm_70`，拿去 DGX-2 必爆。
 - 分辨手上是哪一顆：`apptainer exec $SIF head -1 /opt/build_versions.txt`
-  → `# TARGET=blackwell required_arch=sm_120` 或 `# TARGET=v100 required_arch=sm_70`
+  → `# TARGET=cu130 required_arch=sm_120` 或 `# TARGET=cu121 required_arch=sm_70`
 
-#### 📋 為什麼 DGM 用 cu121 而不是 cu128（評鑑可追溯性）
+#### 📋 為什麼 DGM 跟 DGX-2 用同一顆 cu121（評鑑可追溯性）
 
-DGM 的 A2000 是 `sm_86`，**兩顆容器都跑得動**，所以這純粹是政策選擇。選 cu121 是為了
+DGM 那張卡兩顆容器都跑得動（見機器表），所以這純粹是政策選擇。選 cu121 是為了
 讓評鑑時能講一句乾淨的話：
 
 > **所有 production 分析（DGM + DGX-2）使用同一顆容器映像。**
 
-若 DGM 用 cu128、DGX-2 用 cu121，就得額外論證「torch 2.5.1 與 2.7.0 產出的 Pangolin
-splice 分數等價」—— 那是要拿資料去證的事（同樣本兩台各跑一次、比對分數），
-為了省一次 rsync 而增加這種舉證責任並不划算。統一成一顆就完全不必談。
+若 DGM 跟 DGX-2 用不同 torch 版本，就得額外論證「兩個版本產出的 Pangolin splice 分數
+等價」—— 那是要拿資料去證的事（同樣本兩台各跑一次、比對分數），為了省一次 rsync
+而增加這種舉證責任並不划算。統一成一顆就完全不必談。
 
 開發機（Blackwell / `sm_120`）**必然是例外** —— cu121 沒有 sm_120，物理上不可能統一。
 但這不破壞上面那句聲明，因為開發機不產出臨床報告。完整說法是：
 
 > production 兩台（DGM、DGX-2）使用同一顆 cu121 容器；開發機因 GPU 世代限制
-> （Blackwell sm_120 不在 cu121 的 arch list 內）使用 cu128 容器，僅用於開發與測試，
+> （Blackwell sm_120 不在 cu121 的 arch list 內）使用 cu130 容器，僅用於開發與測試，
 > 不產出臨床報告。
 
 ⚠️ **連帶的驗證要求**：既然臨床報告在 production 產出，**驗證樣本也應該在 production
-容器上跑（或至少複跑一次）**。只在開發機（cu128）驗證、卻在 DGX-2（cu121）發報告，
+容器上跑（或至少複跑一次）**。只在開發機（cu130）驗證、卻在 DGX-2（cu121）發報告，
 嚴格講驗證沒有涵蓋實際的 production stack —— 這正是評鑑會問的問題。
 
 #### 版本沿革（三次嘗試，都留著當紀錄）
@@ -250,7 +252,8 @@ splice 分數等價」—— 那是要拿資料去證的事（同樣本兩台各
 |---------|-------|------|
 | 1.0.4 | `pip install torch`（**未 pin**，實際解析成 cu130）| 開發機正常 → 以為沒事；部署 DGX-2 才發現 V100 完全不能用（CUDA 13 已移除 Volta）|
 | 1.0.5 | `torch==2.5.1+cu121`（單一容器）| DGX-2 修好了，但**反過來把開發機弄壞**（cu121 沒有 sm_120）|
-| **1.0.6** | 兩顆：cu128 / cu121 | 一台一顆。中間試過用 cu128 通吃，被 `%test` 守門員以「缺 sm_70」擋下 |
+| 1.0.6（過程）| 兩顆：cu128 / cu121 | 試過用 cu128 一顆通吃，被 `%test` 守門員以「缺 sm_70」擋下 → 確認必須兩顆 |
+| **1.0.6（現行）** | `pangolin_cu130_*`（開發機）<br>`pangolin_cu121_*`（DGM + DGX-2）| 檔名直接標 CUDA 變體。開發機回到 cu130（Blackwell 原生世代）；production 兩台統一 cu121，便於評鑑聲明「同一顆容器」|
 
 **已知踩雷：**
 
@@ -262,7 +265,7 @@ splice 分數等價」—— 那是要拿資料去證的事（同樣本兩台各
 | `map(int, ...)` crash on `Y`/`R`/`W` | hg38 部分座標含 IUPAC ambiguity code，`one_hot_encode` 只處理 A/C/G/T/N | `%post` patch 2：`re.sub(r'[^01234]', '0', seq)`（同 N，全零 encoding）|
 | Pangolin segfault（CSQ 過長） | WGS 的 CSQ 可達 270 KB，Pangolin parse 時爆掉 | module 內先 `bcftools annotate -x INFO/CSQ` |
 | Pangolin segfault（alt/random contig） | gencode DB 沒有 `chr*_alt` / `chr*_random` / `chrUn_*` 的 gene model | module 內 `grep -E '^#\|^chr([0-9]+\|[XYM])\t'` 只留標準染色體 |
-| **`RuntimeError: ... driver ... too old (found version 12020)`**（DGX-2） | `pip install torch` 沒有 pin，PyPI 預設 wheel 漂移成 cu130（CUDA 13.0），CUDA 13 已移除 Volta 且需驅動 r580+ | DGX-2 改用 **cu121** 容器（`pangolin_v100_1.0.0.sif`），見 §「為什麼是兩顆容器」 |
+| **`RuntimeError: ... driver ... too old (found version 12020)`**（DGX-2） | `pip install torch` 沒有 pin，PyPI 預設 wheel 漂移成 cu130（CUDA 13.0），CUDA 13 已移除 Volta 且需驅動 r580+ | DGX-2 改用 **cu121** 容器（`pangolin_cu121_1.0.0.sif`），見 §「為什麼是兩顆容器」 |
 | **`CUDA error: no kernel image is available for execution on the device`** | wheel 缺這張卡的 arch。兩個方向都發生過：cu121 沒有 `sm_120`（開發機爆）、cu128/cu130 沒有 `sm_70`（DGX-2 爆）| 一台一顆容器，由 `params.pangolin_sif` 切換。**沒有** prebuilt wheel 同時含兩者 |
 
 #### ⚠️ 為什麼是兩顆容器（2026-08 定案，含實測依據）
@@ -272,9 +275,18 @@ splice 分數等價」—— 那是要拿資料去證的事（同樣本兩台各
 
 | 機器 | GPU | compute capability | 容器 |
 |------|-----|-------------------|------|
-| DGX-2（production，`-profile dgx`） | Tesla V100 ×6 | **sm_70**（Volta）| `pangolin_v100_1.0.0.sif` |
-| 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）| `pangolin_1.0.0.sif` |
-| DGM Server（`-profile dgm`） | RTX A2000（GA106，Ampere）| **sm_86** | `pangolin_v100_1.0.0.sif`（刻意與 dgx 一致，見下）|
+| DGX-2（production，`-profile dgx`） | Tesla V100 ×6 | **sm_70**（Volta）| `pangolin_cu121_1.0.0.sif` |
+| 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）| `pangolin_cu130_1.0.0.sif` |
+| DGM Server（`-profile dgm`） | **RTX A2000**（GA106 / Ampere）→ sm_86<br>⚠️ 但 `README.md` 硬體表寫的是 **RTX 2000 Ada**（AD107 / Ada）→ sm_89 —— 兩者名字很像但不同卡，**待用 `nvidia-smi` 確認** | sm_86 **或** sm_89 | `pangolin_cu121_1.0.0.sif`（刻意與 dgx 一致，見下）|
+
+> ⚠️ **DGM 的 GPU 型號有兩種記載，要確認一下**：這裡記的是 `RTX A2000`（Ampere GA106，
+> sm_86），但 `README.md` 的硬體表寫 `RTX 2000 Ada`（Ada AD107，sm_89）。兩者名稱極為
+> 相似但是不同世代的卡。**結論不受影響** —— cu121 的 arch list 明確含 `sm_86`，而 `sm_89`
+> 也可用（CUDA cubin 在**同一個 major 版本內**向前相容，`sm_86` 的 cubin 可在 `sm_89`
+> 上執行）。但硬體表要正確，請跑一次並把結果寫回兩邊：
+> ```bash
+> ssh n101569@192.168.84.91 nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv
+> ```
 
 **為什麼不能一顆通吃（已實測確認）。** CUDA 工具鏈層面，12.8/12.9 是唯一同時支援
 sm_70（deprecated 但可編譯）與 sm_120（12.8 才有）的版本 —— ≤12.6 沒有 sm_120，
@@ -348,17 +360,18 @@ From: python:3.11-slim
         && rm -rf /var/lib/apt/lists/*
 
     # ══════════════════════════════════════════════════════════════════
-    #  ★★ 要換目標機器只改這一行 ★★
-    #     v100      → DGX-2 Tesla V100（sm_70）      → pangolin_v100_1.0.0.sif
-    #     blackwell → 開發機 RTX PRO 6000（sm_120）  → pangolin_1.0.0.sif
+    #  ★★ 要換目標只改這一行 ★★（TARGET 名稱＝輸出的 sif 檔名）
+    #     cu121 → production：DGM + DGX-2（V100 sm_70）→ pangolin_cu121_1.0.0.sif
+    #     cu130 → 開發機 RTX PRO 6000 Blackwell（sm_120）→ pangolin_cu130_1.0.0.sif
     #  ══════════════════════════════════════════════════════════════════
-    TARGET=blackwell
+    TARGET=cu130
 
-    # ── ⚠️ torch 一定要 pin，而且不同機器要不同 wheel ────────────────────
+    # ── ⚠️ torch 的 CUDA 變體一定要用 --index-url 明確指定 ─────────────────
     #   為什麼不能用預設的 `pip install torch`：
-    #     PyPI 預設 wheel 已漂移成 cu130（CUDA 13.0）→ 需要驅動 r580+，
-    #     且 CUDA 13.0 已移除 Volta(sm_70) → DGX-2 的 V100 永遠跑不起來。
-    #     這就是原本那顆容器的 bug：unpinned → 預設變 cu130 → 只有開發機能跑。
+    #     PyPI 的預設 wheel 會隨時間漂移（實際觀察到從 CUDA 12.x 變成 cu130）。
+    #     這就是原本那顆容器的 bug：同一份 def 檔重建就產出不同的容器，
+    #     而 cu130 沒有 sm_70 → DGX-2 的 V100 永遠跑不起來。
+    #     ★ 重點不是「不能用 cu130」，而是「不能讓它隱性漂移」。
     #   為什麼要兩顆而不是一顆通吃（實測結論，不是猜的）：
     #     torch 2.5.1+cu121 arch = sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90
     #     torch 2.7.0+cu128 arch = sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120
@@ -366,25 +379,29 @@ From: python:3.11-slim
     #     → 沒有任何 prebuilt wheel 同時有 sm_70 和 sm_120，只能一台一顆。
     #     （通吃只能從源碼編，要 1.5–3 小時 + 30GB 暫存，不值得。）
     #   torchvision 已移除：Pangolin 不 import 它，留著只是多一個版本配對的束縛。
-    if [ "$TARGET" = "v100" ]; then
-        # cu121 <= DGX-2 驅動的 CUDA 12.2 → 連 minor-version 相容都不必依賴。
-        # 2.5.1 是還有 cu121 wheel 的最後一個版本（2.6 起改成 cu118/cu124/cu126）。
+    if [ "$TARGET" = "cu121" ]; then
+        # production 兩台共用。cu121 <= DGX-2 驅動的 CUDA 12.2 → 連 minor-version
+        # 相容都不必依賴；2.5.1 是還有 cu121 wheel 的最後一個版本
+        # （2.6 起改成 cu118/cu124/cu126）。
         pip install --no-cache-dir \
             --index-url https://download.pytorch.org/whl/cu121 \
             torch==2.5.1
         echo "sm_70" > /opt/required_arch.txt
     else
-        # sm_120 從 CUDA 12.8 才有。用 cu128 而不是預設的 cu130，因為：
-        #   (1) 已實測含 sm_120 + compute_120；(2) 有明確 pin，不會再漂移；
-        #   (3) CUDA 12.x 不需要 r580+ 驅動，換機器時比較不會卡。
-        #   若真的要回到 cu130，把下面兩行換成：
-        #     --index-url https://download.pytorch.org/whl/cu130 torch
+        # 開發機專用。Blackwell 是 CUDA 13 世代的原生目標，cuBLAS/cuDNN 的
+        # sm_120 kernel 在 13.x 較新，理論上比 cu128 更貼合這張卡。
+        #   ⚠️ 版本沒有 pin 到 patch level：cu130 的 torch 版本組合我沒有實測過，
+        #      這裡只 pin CUDA 變體（＝真正會漂移的那一項）。
+        #      **第一次 build 完請看 /opt/build_versions.txt 印出的 torch 版本，
+        #      把它寫回這裡變成 torch==X.Y.Z**，之後重建才完全可重現。
+        #   ⚠️ cu130 需要驅動 r580+，且沒有 sm_70 —— 絕對不能拿去 DGX-2。
+        #      真的誤用了，%test 的守門員會擋（TARGET=cu121 時要求 sm_70）。
         pip install --no-cache-dir \
-            --index-url https://download.pytorch.org/whl/cu128 \
-            torch==2.7.0
+            --index-url https://download.pytorch.org/whl/cu130 \
+            torch
         echo "sm_120" > /opt/required_arch.txt
     fi
-    echo "$TARGET" > /opt/target_machine.txt
+    echo "$TARGET" > /opt/build_target.txt
     echo "[BUILD] TARGET=$TARGET required_arch=$(cat /opt/required_arch.txt)"
 
     pip install --no-cache-dir gffutils biopython pandas pyfastx pyvcf3
@@ -394,7 +411,7 @@ From: python:3.11-slim
     #   寫進 image，之後 `apptainer exec $SIF cat /opt/build_versions.txt` 就能查，
     #   評鑑要求的「版本可追溯」也用得上。兩顆容器長得很像，這也是分辨的依據。
     {
-        echo "# TARGET=$(cat /opt/target_machine.txt) required_arch=$(cat /opt/required_arch.txt)"
+        echo "# TARGET=$(cat /opt/build_target.txt) required_arch=$(cat /opt/required_arch.txt)"
         pip freeze | grep -iE "^(torch|pangolin|pyvcf3|gffutils|pyfastx|biopython|pandas)"
     } > /opt/build_versions.txt
     echo "--- build_versions.txt ---"; cat /opt/build_versions.txt
@@ -456,9 +473,10 @@ PYEOF
     python3 - <<'PYEOF'
 import sys, torch
 
-target   = open("/opt/target_machine.txt").read().strip()
+target   = open("/opt/build_target.txt").read().strip()
 required = open("/opt/required_arch.txt").read().strip()
-MACHINE  = {"sm_70": "DGX-2 Tesla V100", "sm_120": "開發機 RTX PRO 6000 Blackwell"}
+MACHINE  = {"sm_70": "production：DGM + DGX-2 Tesla V100",
+            "sm_120": "開發機 RTX PRO 6000 Blackwell"}
 
 cuda = torch.version.cuda or ""
 print(f"TARGET={target} required_arch={required}")
@@ -476,10 +494,13 @@ if not flags:
     flags = torch.__config__.show()
 print("arch flags:", flags)
 
-# 檢查 1（只對 V100）：CUDA 13.x 移除了 Volta 且要求驅動 r580+，DGX-2 只到 12.2。
+# 檢查 1（只對 production／sm_70）：CUDA 13.x 移除了 Volta 且要求驅動 r580+，
+#   DGX-2 的驅動只到 12.2 → TARGET=cu121 誤裝成 13.x 要立刻擋掉。
+#   TARGET=cu130 不受此檢查（開發機本來就是 CUDA 13 世代）。
 if required == "sm_70" and not cuda.startswith("12"):
-    sys.exit(f"FATAL: torch built with CUDA {cuda!r}。DGX-2 的 V100 需要 CUDA 12.x"
-             "（13.x 已移除 Volta/sm_70 且要求驅動 r580+）。")
+    sys.exit(f"FATAL: torch built with CUDA {cuda!r}。TARGET=cu121 需要 CUDA 12.x"
+             "（13.x 已移除 Volta/sm_70 且要求驅動 r580+）。"
+             "檢查 --index-url 是不是誤指到 cu130。")
 
 # 檢查 2：★ 真正的把關 ★ wheel 裡到底有沒有這台機器的 arch。
 #   「CUDA 12.8 支援 sm_70」不等於「這顆 wheel 包了 sm_70」——
@@ -519,7 +540,7 @@ PYEOF
 
 %labels
     Version 1.0.6
-    Description "Pangolin tkzeng/Pangolin + pinned PyTorch (see /opt/build_versions.txt) + pyvcf3 patched + bcftools + tabix/bgzip"
+    Description "Pangolin tkzeng/Pangolin + PyTorch pinned by TARGET (cu121 or cu130; see /opt/build_versions.txt) + pyvcf3 patched + bcftools + tabix/bgzip"
 EOF
 
 conda activate base
@@ -527,22 +548,29 @@ conda activate base
 # ── 兩顆都要建。差別只有 def 檔裡的 TARGET 那一行 ────────────────────────
 # ⚠️ 不要加 --notest，%test 的 arch 守門員要在 build 階段生效
 
-# (A) 開發機專用（TARGET=blackwell，cu128 / sm_120）
-apptainer build /data/pylin1991/nf-containers/pangolin_1.0.0.sif /tmp/pangolin.def
-apptainer test  /data/pylin1991/nf-containers/pangolin_1.0.0.sif
+SIFDIR=/data/pylin1991/nf-containers
+
+# (A) 開發機專用（TARGET=cu130 / sm_120）—— def 檔預設就是這個
+apptainer build $SIFDIR/pangolin_cu130_1.0.0.sif /tmp/pangolin.def
+apptainer test  $SIFDIR/pangolin_cu130_1.0.0.sif
 # 期望：OK: sm_120 在 arch flags 裡 -> 開發機 RTX PRO 6000 Blackwell 可用
+#
+# ★ 第一次建完，把實際的 torch 版本 pin 回 def 檔（cu130 那支 pip 沒有 pin 到 patch）
+apptainer exec $SIFDIR/pangolin_cu130_1.0.0.sif grep '^torch' /opt/build_versions.txt
+#   例如印出 torch==2.9.0+cu130 → 把 def 裡 cu130 分支的 `torch` 改成 `torch==2.9.0`
 
-# (B) production 兩台共用：DGM + DGX-2（TARGET=v100，cu121 / sm_50…sm_90）
-sed -i 's/^    TARGET=blackwell$/    TARGET=v100/' /tmp/pangolin.def
+# (B) production 兩台共用：DGM + DGX-2（TARGET=cu121 / sm_50…sm_90）
+sed -i 's/^    TARGET=cu130$/    TARGET=cu121/' /tmp/pangolin.def
 grep -n '^    TARGET=' /tmp/pangolin.def          # 確認真的改到了
-apptainer build /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif /tmp/pangolin.def
-apptainer test  /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif
-# 期望：OK: sm_70 在 arch flags 裡 -> DGX-2 Tesla V100 可用
-#   （守門員只驗最嚴格的 sm_70；DGM 的 sm_86 也在 cu121 的 arch list 內）
+apptainer build $SIFDIR/pangolin_cu121_1.0.0.sif /tmp/pangolin.def
+apptainer test  $SIFDIR/pangolin_cu121_1.0.0.sif
+# 期望：OK: sm_70 在 arch flags 裡 -> production：DGM + DGX-2 Tesla V100 可用
+#   （守門員只驗最嚴格的 sm_70；DGM 那張卡也在 cu121 的 arch list 內，見機器表）
 
-# 分辨兩顆容器（TARGET 寫在第一行）
-apptainer exec /data/pylin1991/nf-containers/pangolin_1.0.0.sif      head -1 /opt/build_versions.txt
-apptainer exec /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif head -1 /opt/build_versions.txt
+# 分辨兩顆容器（TARGET 寫在 build_versions.txt 第一行）
+apptainer exec $SIFDIR/pangolin_cu130_1.0.0.sif head -1 /opt/build_versions.txt
+apptainer exec $SIFDIR/pangolin_cu121_1.0.0.sif head -1 /opt/build_versions.txt
+# 期望：# TARGET=cu130 required_arch=sm_120  ／  # TARGET=cu121 required_arch=sm_70
 ```
 
 #### 部署與驗證
@@ -550,32 +578,32 @@ apptainer exec /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif head -1 /op
 **每顆容器都要在它的目標機器上實測** —— 這次的教訓就是「只在一台上測會漏」：
 
 ```bash
-# ── 1) 開發機（Blackwell / sm_120）：用 pangolin_1.0.0.sif ─────────────
-SIF=/data/pylin1991/nf-containers/pangolin_1.0.0.sif
+# ── 1) 開發機（Blackwell / sm_120）：用 pangolin_cu130_1.0.0.sif（cu130）────
+SIF=/data/pylin1991/nf-containers/pangolin_cu130_1.0.0.sif
 apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition
 
-# ── 2) 把 cu121 那顆傳到兩台 production（不要傳 pangolin_1.0.0.sif 過去）──
+# ── 2) 把 cu121 那顆傳到兩台 production（不要傳 pangolin_cu130_1.0.0.sif 過去）──
 #      DGX-2
 rsync -avz --progress \
-    /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif \
+    /data/pylin1991/nf-containers/pangolin_cu121_1.0.0.sif \
     n101569@10.11.33.75:/datalake_Intermediate/pipeline/nextflow_containers/
 #      DGM
 rsync -avz --progress \
-    /data/pylin1991/nf-containers/pangolin_v100_1.0.0.sif \
+    /data/pylin1991/nf-containers/pangolin_cu121_1.0.0.sif \
     n101569@192.168.84.91:/home/pipeline/nextflow_containers/
 
-# ── 3) DGX-2（V100 / sm_70）：用 pangolin_v100_1.0.0.sif ───────────────
+# ── 3) DGX-2（V100 / sm_70）：用 pangolin_cu121_1.0.0.sif ───────────────
 ssh n101569@10.11.33.75
-SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_v100_1.0.0.sif
+SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_cu121_1.0.0.sif
 apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True Tesla V100-SXM3-32GB
 
-# ── 3b) DGM（RTX A2000 / sm_86）：同一顆 pangolin_v100_1.0.0.sif ────────
+# ── 3b) DGM（RTX A2000 / sm_86）：同一顆 pangolin_cu121_1.0.0.sif ────────
 ssh n101569@192.168.84.91
-SIF=/home/pipeline/nextflow_containers/pangolin_v100_1.0.0.sif
+SIF=/home/pipeline/nextflow_containers/pangolin_cu121_1.0.0.sif
 apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True NVIDIA RTX A2000
@@ -981,7 +1009,7 @@ cd /data/pylin1991/GenomicReference/hg38/tertiary/pangolin
 wget -c https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_47/gencode.v47.annotation.gtf.gz
 
 apptainer exec --bind /scratch,/data \
-    /data/pylin1991/nf-containers/pangolin_1.0.0.sif \
+    /data/pylin1991/nf-containers/pangolin_cu130_1.0.0.sif \
     create_db.py \
     --filter MANE_Select,MANE_Plus_Clinical,Ensembl_canonical \
     gencode.v47.annotation.gtf.gz
@@ -1209,10 +1237,10 @@ grep "CYP2D6\|CYP2C9\|HLA\|GENE" \
 ### 傳送容器
 ```bash
 # vep_115.sif（約 5GB）
-# pangolin_v100_1.0.0.sif（DGM 用這顆，cu121 —— 與 DGX-2 同一顆）
-#   DGM 是 RTX A2000 = sm_86，cu121/cu128 兩顆都跑得動；統一用 cu121 是為了
+# pangolin_cu121_1.0.0.sif（DGM 用這顆，cu121 —— 與 DGX-2 同一顆）
+#   DGM 那張卡兩顆都跑得動（見容器建立章節的機器表）；統一用 cu121 是為了
 #   評鑑能聲明「所有 production 使用同一顆容器」，見容器建立章節的說明。
-#   ※ pangolin_1.0.0.sif（cu128）只有開發機需要，不必傳到 DGM
+#   ※ pangolin_cu130_1.0.0.sif（cu130）只有開發機需要，不必傳到 DGM
 # tertiary_python_1.0.0.sif
 scp /data/pylin1991/nf-containers/*.sif \
     n101569@192.168.84.91:/home/pipeline/nextflow_containers/
@@ -1285,7 +1313,7 @@ mkdir -p /datalake_Intermediate/pipeline/tertiary_code
 ### 傳送容器（三級專用的幾個；其餘與二級共用）
 ```bash
 rsync -avz --progress \
-    /data/pylin1991/nf-containers/{vep_115,pangolin_v100_1.0.0,tertiary_python_1.0.0,annotsv_3.5.10,pharmcat_3.2.0,stellarpgx_graphtyper2.5.1,optitype_1.3.5,samtools_1.23.1}.sif \
+    /data/pylin1991/nf-containers/{vep_115,pangolin_cu121_1.0.0,tertiary_python_1.0.0,annotsv_3.5.10,pharmcat_3.2.0,stellarpgx_graphtyper2.5.1,optitype_1.3.5,samtools_1.23.1}.sif \
     n101569@10.11.33.75:/datalake_Intermediate/pipeline/nextflow_containers/
 ```
 
@@ -1324,7 +1352,7 @@ nextflow -c .../nextflow_tertiary.config run .../main_tertiary.nf -profile dgx \
     --samplesheet /dev/null --out_dir /tmp/x -preview
 
 # 2) Pangolin 能否吃 V100（compute 7.0 / sm_70）
-SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_v100_1.0.0.sif
+SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_cu121_1.0.0.sif
 apptainer exec --nv $SIF \
     python3 -c "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 #   期望：cuda True Tesla V100-SXM3-32GB
@@ -1342,9 +1370,9 @@ apptainer exec --nv $SIF python3 -c \
 apptainer exec $SIF python3 -c \
     "import torch; print(torch.__version__, torch.version.cuda); \
      print(torch._C._cuda_getArchFlags())"
-#      arch flags 缺 sm_70 → 這顆不是 V100 版（很可能誤傳了開發機的 cu128 容器）。
-#      DGX-2 只能用 pangolin_v100_1.0.0.sif；第一行 TARGET 可以確認：
-apptainer exec $SIF head -1 /opt/build_versions.txt      # 期望 TARGET=v100
+#      arch flags 缺 sm_70 → 這顆不是 cu121 版（很可能誤傳了開發機的 cu130 容器）。
+#      production 只能用 pangolin_cu121_1.0.0.sif；第一行 TARGET 可以確認：
+apptainer exec $SIF head -1 /opt/build_versions.txt      # 期望 TARGET=cu121
 #      見「容器建立 → Pangolin → 為什麼是兩顆容器」。
 #      重建期間可先用 --use_gpu_pangolin false 走 CPU（結果相同，只影響速度）。
 
