@@ -952,6 +952,32 @@ hg38 的 HLA reads 分散在三處：
 - bcftools mpileup `-r` region 必須按 coordinate 升序（827 < 1494 < 1555），否則 `hts_idx_push` 報錯
 - bcftools mpileup 輸出後需加 `bcftools sort` 再 tabix，避免排序問題
 
+#### ⚠️ coverage 閘門失效（2026-08 修正）
+
+寫評鑑大補帖、逐行核對 `parse_pgx_report.py` 時抓到：上面那句「有 coverage 才補 Reference」
+**當時並沒有真的生效**。
+
+```python
+if covered_positions or no_mito is False:   # ← no_mito 在這裡必然是 False
+```
+
+`no_mito == True` 的情況函式在前面就 `return` 了，所以 `no_mito is False` 恆為真，
+`or` 短路掉整個 coverage 判斷 —— 只要 `mito.tsv` 存在且沒 call 到 MT-RNR1 致病變異，
+**即使三個位點深度都是 0，也照樣輸出 `Reference / MTRN1_RISK=LOW`**，
+`NOTES` 還會寫 "Coverage confirmed via mito pipeline"。
+臨床上等於對一個沒測到的樣本宣告「可正常使用 aminoglycoside」→ 不可逆聽力損傷風險。
+
+修正三處（`scripts/parse_pgx_report.py`）：
+
+1. 拿掉 `or no_mito is False`，coverage 閘門真的生效；三點都 `DP < 10` → 不輸出列 → Unknown
+2. coverage 只認 `MTRN1_PATHOGENIC` 的三個位點（原本走訪 VCF 全部位點，混進其他 chrM 位點會誤判）
+3. `RECOMMENDATION` 只列**實際評估過**的變異；部分覆蓋時明列哪些位點未評估
+4. `DP >= 10` 提為模組常數 `MTRN1_MIN_DP`
+
+`MTRN1_RISK` 值域（`HIGH`/`LOW`/Unknown）不變，下游 GUI 不受影響。
+7 個情境實測（全覆蓋 / 全 0 / 部分覆蓋 / 無 VCF / 只有其他位點 / 帶 m.1555A>G / 無 mito.tsv）皆符合預期。
+詳見 `docs/評鑑大補帖_三級分析.md` §10.12。
+
 ### ClinVar
 
 - NCBI 下載的 VCF contig 格式是 `1`, `2`（無 chr 前綴）→ VEP annotation 全部為 `.`

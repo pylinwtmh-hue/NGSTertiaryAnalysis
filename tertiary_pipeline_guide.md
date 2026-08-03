@@ -587,8 +587,8 @@ AnnotSV 輸出兩種行（`Annotation_mode` 欄位）：
 | CPIC_LEVEL | CPIC 證據等級（`Strong` / `Moderate` / `.`）|
 | DPWG_LEVEL | DPWG 證據等級（`Strong` / `Moderate` / `.`）|
 | OUTSIDE_CALLER | outside call 來源（`PharmCAT-outside`：StellarPGx/OptiType 提供）|
-| MTRN1_RISK | MT-RNR1 aminoglycoside 風險（`HIGH` / `LOW` / Unknown）|
-| NOTES | 補充說明（heteroplasmy AF、ClinVar sig 等）|
+| MTRN1_RISK | MT-RNR1 aminoglycoside 風險（`HIGH` / `LOW` / Unknown）。`LOW` 需要 mpileup 證實 chrM:827/1494/1555 至少一個位點 `DP ≥ 10`；三個位點都沒深度時**不輸出 MT-RNR1 列**（＝Unknown，代表「沒測到」而非「陰性」）|
+| NOTES | 補充說明（heteroplasmy AF、ClinVar sig；MT-RNR1 列會標明哪些位點已確認覆蓋、哪些未評估）|
 | EVIDENCE_STRENGTH | 整體證據強度（`Strong` / `Moderate` 等）|
 
 > **DRAGEN 交叉註記（僅 DRAGEN 樣本，v3.5）：** `NOTES` 欄會附上 DRAGEN 原生 PGx 判讀

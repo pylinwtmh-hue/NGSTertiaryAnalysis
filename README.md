@@ -695,6 +695,9 @@ could not annotate.
   IMPLICATION CPIC_LEVEL DPWG_LEVEL OUTSIDE_CALLER MTRN1_RISK NOTES EVIDENCE_STRENGTH`. Covers CPIC
   Level A genes: CYP2D6, CYP2C19, CYP2C9, DPYD, TPMT, NUDT15, SLCO1B1, HLA-A, HLA-B, UGT1A1, G6PD,
   MT-RNR1 (via mito pipeline), IFNL3, CACNA1S, RYR1.
+  - `MTRN1_RISK=LOW` is only emitted when `bcftools mpileup` confirms `DP ≥ 10` at chrM:827/1494/1555;
+    positions below that threshold are listed as *not assessed* in `NOTES`/`RECOMMENDATION`, and if none
+    of the three are covered no MT-RNR1 row is written at all (Unknown = "not measured", never "negative").
   - *(DRAGEN only)* `NOTES` additionally carries a cross-check against DRAGEN's native PGx calls
     (`other/{sample}/germline_seq/{sample}.targeted.json`): per gene, `DRAGEN 一致/不一致/未比對: <DRAGEN
     genotype>` (concordant / differs-same-notation / different-notation-not-judged). Reference notations
