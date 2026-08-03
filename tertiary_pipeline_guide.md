@@ -4,7 +4,7 @@
 **更新日期：2026-08-03**
 **負責人：林伯昱（p88124019@gs.ncku.edu.tw）**
 
-> v3.6 更新：ClinGen 專家判讀對照（ERepo）、`--academic_dbnsfp`（dbNSFP 5.3a + 新 in-silico
+> v3.6 更新：新增 DGX-2 執行方式（檔名移除 DGM，本說明同時適用 DGM 與 DGX-2）、ClinGen 專家判讀對照（ERepo）、`--academic_dbnsfp`（dbNSFP 5.3a + 新 in-silico
 > 工具）、PVS1 改為 ClinGen SVI 決策樹分級、新增 DGX-2 profile（含 GPU lock）、
 > Pangolin 可切 CPU/GPU。SNV/indel 表由 65 欄擴充為 **81 欄**（新欄位一律附加在最後，
 > 既有欄位位置不變）。
@@ -47,10 +47,26 @@
 
 ## 執行方式
 
+### 執行環境
+
+目前有兩台機器可以跑，差別只在 `-profile` 與路徑：
+
+| 機器 | profile | 程式碼位置 | 輸出位置 | 備註 |
+|------|---------|-----------|---------|------|
+| **DGM Server** | `dgm` | `/home/pipeline/tertiary_code` | `/home/pipeline/tertiary_output` | 32 核、獨佔 GPU |
+| **DGX-2** | `dgx` | `/datalake_Intermediate/pipeline/tertiary_code` | `/datalake_Intermediate/pipeline/nextflow_output` | 48 核、V100×6，**與二級共用 GPU → 自動搶卡** |
+
+下面的指令以 **DGM** 為例；要在 DGX-2 跑，把 `-profile dgm` 換成 `-profile dgx`、
+路徑換成上表的 DGX-2 欄位即可（見文末「在 DGX-2 執行」）。
+
 ### 環境準備
 
 ```bash
+# DGM
 source /home/pipeline/pipeline_code/DGM_NGS2ndAnalysis.sh
+
+# DGX-2：登入後直接用 nextflow（不需 source）
+ssh n101569@10.11.33.75
 ```
 
 ### Sample Sheet 格式
@@ -201,6 +217,28 @@ gnomAD 4.1 **只是參考欄位，不參與計分**。執行時 banner 會印出
 
 Pangolin 是唯一需要 GPU 的步驟。沒有 GPU 的機器加上 `--use_gpu_pangolin false` 即可改走 CPU
 （較慢，結果相同），其他步驟完全不受影響。
+
+#### 在 DGX-2 執行
+
+DGX-2 與二級分析共用 reference、容器與 GPU，所以：
+
+- **會自動搶卡**：`-profile dgx` 已啟用 GPU lock，每個 Pangolin 自己搶一張空閒 V100，跑完
+  歸還（即使中途失敗也會還）。**不需要也不要手動指定卡號**。
+- **多樣本會並行**：最多 6 個 Pangolin 同時跑（對應 6 張 V100）。單一樣本只會用到一張。
+- **DRAGEN 原始資料**在 `/datalake_Raw`，profile 已掛載，`input_dir` 直接寫該路徑即可。
+
+```bash
+ssh n101569@10.11.33.75
+
+nextflow -c /datalake_Intermediate/pipeline/tertiary_code/nextflow_tertiary.config \
+    run /datalake_Intermediate/pipeline/tertiary_code/main_tertiary.nf \
+    -profile dgx \
+    --samplesheet /datalake_Intermediate/pipeline/samplesheet_nckuh.csv \
+    --out_dir /datalake_Intermediate/pipeline/nextflow_output \
+    -resume
+```
+
+其餘所有選項（`--pipeline_type`、`--run_pgx`、`--academic_dbnsfp` …）用法與 DGM 完全相同。
 
 #### 進階：用 `--pipeline_type` 過濾混合 sample sheet
 

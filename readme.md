@@ -715,12 +715,93 @@ source /home/pipeline/pipeline_code/DGM_NGS2ndAnalysis.sh
 nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
     run /home/pipeline/tertiary_code/main_tertiary.nf \
     -profile dgm \
-    --sample_id NA12878_WES \
-    --input_dir /home/pipeline/nextflow_output/NA12878_WES/NA12878_WES \
-    --seq_type WES \
+    --samplesheet /home/pipeline/samplesheet_nckuh.csv \
     --out_dir /home/pipeline/tertiary_output \
     -resume
 ```
+
+> ⚠️ v3.1 起改為 sample sheet 批次輸入，舊的 `--sample_id / --input_dir / --seq_type`
+> 三個參數已不再使用。
+
+---
+
+## 傳送至 DGX-2
+
+DGX-2 與二級分析共用同一個 reference 與容器目錄（`/datalake_Intermediate/pipeline/`），
+但**三級程式碼放獨立的 `tertiary_code/`**，不與二級的 `pipeline_code/` 混用（兩者都有
+`modules/` 和 `scripts/`，放同一層會互相覆蓋）。
+
+| 項目 | 位置 |
+|------|------|
+| 帳號 | `n101569@10.11.33.75` |
+| Reference | `/datalake_Intermediate/pipeline/reference/hg38`（**與二級共用**）|
+| 容器 | `/datalake_Intermediate/pipeline/nextflow_containers`（**與二級共用**）|
+| 三級程式碼 | `/datalake_Intermediate/pipeline/tertiary_code` |
+| 輸出 | `/datalake_Intermediate/pipeline/nextflow_output` |
+| GPU | V100 × 6，與二級共用 → **必須用 GPU lock**（`-profile dgx` 已預設開啟）|
+
+### 建立資料夾（僅三級需要新增的部分）
+```bash
+ssh n101569@10.11.33.75
+mkdir -p /datalake_Intermediate/pipeline/tertiary_code
+# reference / nextflow_containers / nextflow_output 由二級部署時已建立
+```
+
+### 傳送容器（三級專用的幾個；其餘與二級共用）
+```bash
+rsync -avz --progress \
+    /data/pylin1991/nf-containers/{vep_115,pangolin_1.0.0,tertiary_python_1.0.0,annotsv_3.5.10,pharmcat_3.2.0,stellarpgx_graphtyper2.5.1,optitype_1.3.5,samtools_1.23.1}.sif \
+    n101569@10.11.33.75:/datalake_Intermediate/pipeline/nextflow_containers/
+```
+
+### 傳送 Reference（三級資料庫）
+```bash
+# 只傳 tertiary/ 子目錄即可（hg38 主參考二級已傳過）
+# gnomad/ 約 600GB，VEP cache 內建版本已足夠 → 排除
+rsync -avz --progress --exclude='gnomad/' \
+    /data/pylin1991/GenomicReference/hg38/tertiary/ \
+    n101569@10.11.33.75:/datalake_Intermediate/pipeline/reference/hg38/tertiary/
+```
+
+### 傳送 Pipeline 程式碼
+```bash
+rsync -avz --progress \
+    /data/pylin1991/nf-containers/NGStertiary/1_0_0/ \
+    n101569@10.11.33.75:/datalake_Intermediate/pipeline/tertiary_code/
+```
+
+### DGX-2 執行
+```bash
+ssh n101569@10.11.33.75
+
+nextflow -c /datalake_Intermediate/pipeline/tertiary_code/nextflow_tertiary.config \
+    run /datalake_Intermediate/pipeline/tertiary_code/main_tertiary.nf \
+    -profile dgx \
+    --samplesheet /datalake_Intermediate/pipeline/samplesheet_nckuh.csv \
+    --out_dir /datalake_Intermediate/pipeline/nextflow_output \
+    -resume
+```
+
+### 部署後檢查
+```bash
+# 1) 路徑推導是否正確（不需真樣本）
+nextflow -c .../nextflow_tertiary.config run .../main_tertiary.nf -profile dgx \
+    --samplesheet /dev/null --out_dir /tmp/x -preview
+
+# 2) Pangolin 能否吃 V100（compute 7.0）
+apptainer exec --nv /datalake_Intermediate/pipeline/nextflow_containers/pangolin_1.0.0.sif \
+    python3 -c "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+#   印不出 cuda True → 改用 --use_gpu_pangolin false 走 CPU（只影響速度）
+
+# 3) GPU lock 腳本存在（與二級共用）
+ls -l /datalake_Intermediate/pipeline/pipeline_code/gpu_{lock,unlock}.sh
+```
+
+> **GPU lock**：DGX-2 是共用機器，二級（Parabricks）與三級（Pangolin）可能同時執行。
+> `-profile dgx` 會啟用 `use_gpu_lock`，每個 Pangolin task 由 `gpu_lock.sh` 搶一張空閒卡、
+> `trap EXIT` 歸還；`maxForks = 6` 對應六張 V100。**卡號不要寫死在 config**，否則多個 task
+> 會擠同一張。
+
 ---
 
 ## PGx Module 建置記錄
