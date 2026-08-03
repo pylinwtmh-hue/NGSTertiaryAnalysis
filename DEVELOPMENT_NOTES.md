@@ -210,7 +210,7 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 | pip index | `download.pytorch.org/whl/cu130` | `download.pytorch.org/whl/cu121` |
 | 必須有的 arch | `sm_120` | `sm_70` |
 | 實測 arch flags | （cu128 曾實測 `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120`；cu130 建完請補上）| `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` |
-| 用在哪些 profile | **`local`** 只有開發機（RTX PRO 6000 Blackwell，sm_120）<br>＝ 唯一被 GPU 世代逼著分家的一台 | **`dgm`** + **`dgx`**（DGX-2 Tesla V100 ×6，sm_70）<br>＝ **兩台 production 共用這顆** |
+| 用在哪些 profile | **`local`** 只有開發機（RTX PRO 6000 Blackwell，sm_120）<br>＝ 唯一被 GPU 世代逼著分家的一台 | **`dgm`**（RTX 2000 Ada，sm_89）<br>**`dgx`**（DGX-2 Tesla V100 ×6，sm_70）<br>＝ **兩台 production 共用這顆** |
 | 需要的驅動 | **r580+**（CUDA 13.0 的硬要求）| CUDA 12.1（DGX-2 只有 12.2，cu121 ≤ 12.2 更保險）|
 
 - 切換機制：`nextflow_tertiary.config` 三個 profile 各自宣告 `params.pangolin_sif`，
@@ -277,16 +277,73 @@ DGM 那張卡兩顆容器都跑得動（見機器表），所以這純粹是政�
 |------|-----|-------------------|------|
 | DGX-2（production，`-profile dgx`） | Tesla V100 ×6 | **sm_70**（Volta）| `pangolin_cu121_1.0.0.sif` |
 | 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）| `pangolin_cu130_1.0.0.sif` |
-| DGM Server（`-profile dgm`） | **RTX A2000**（GA106 / Ampere）→ sm_86<br>⚠️ 但 `README.md` 硬體表寫的是 **RTX 2000 Ada**（AD107 / Ada）→ sm_89 —— 兩者名字很像但不同卡，**待用 `nvidia-smi` 確認** | sm_86 **或** sm_89 | `pangolin_cu121_1.0.0.sif`（刻意與 dgx 一致，見下）|
+| DGM Server（`-profile dgm`） | RTX 2000 Ada Generation（AD107 / Ada）<br>driver 580.173.02 | **sm_89** ⚠️ 不在 cu121 的 arch list 內，靠同 major 版本相容（見下）| `pangolin_cu121_1.0.0.sif`（刻意與 dgx 一致，見下）|
 
-> ⚠️ **DGM 的 GPU 型號有兩種記載，要確認一下**：這裡記的是 `RTX A2000`（Ampere GA106，
-> sm_86），但 `README.md` 的硬體表寫 `RTX 2000 Ada`（Ada AD107，sm_89）。兩者名稱極為
-> 相似但是不同世代的卡。**結論不受影響** —— cu121 的 arch list 明確含 `sm_86`，而 `sm_89`
-> 也可用（CUDA cubin 在**同一個 major 版本內**向前相容，`sm_86` 的 cubin 可在 `sm_89`
-> 上執行）。但硬體表要正確，請跑一次並把結果寫回兩邊：
-> ```bash
-> ssh n101569@192.168.84.91 nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv
-> ```
+#### ⚠️ DGM 的 sm_89 不在 cu121 的 arch list 裡（靠同 major 版本相容）
+
+實測（`nvidia-smi --query-gpu=name,compute_cap,driver_version --format=csv`）：
+
+```
+NVIDIA RTX 2000 Ada Generation, 8.9, 580.173.02
+```
+
+`sm_89` **沒有**出現在 cu121 wheel 的 arch flags（`sm_50 sm_60 sm_70 sm_75 sm_80 sm_86
+sm_90`）裡。它能跑是因為 **CUDA cubin 在同一個 major compute capability 版本內向前相容**
+—— `sm_86` 的 cubin 可以在 `sm_87` / `sm_89` 上執行（都是 major 8）。這是 NVIDIA 有文件
+保證的行為，不是 workaround。
+
+對照一下就知道為什麼 V100 和 Blackwell 沒有這個好處：`sm_70`（major 7）與 `sm_120`
+（major 12）跟其他世代**跨了 major**，所以完全不相容 —— 這也正是必須分兩顆容器的根因。
+
+| 卡 | compute cap | cu121 wheel 怎麼滿足它 |
+|----|-------------|----------------------|
+| DGX-2 Tesla V100 | sm_70（major 7）| arch list 直接有 `sm_70` |
+| DGM RTX 2000 Ada | sm_89（major 8）| **沒有 `sm_89`，用 `sm_86` cubin 向前相容** |
+| 開發機 RTX PRO 6000 | sm_120（major 12）| ❌ 完全沒有，必須另一顆 cu130 |
+
+**所以 DGM 的部署驗證比另外兩台更重要**：另外兩台是 arch list 直接命中，DGM 是靠相容性
+推論。推論可能有例外（例如某個 cuDNN kernel 只出特定 arch），所以 **一定要在 DGM 上跑一次
+真的 conv1d forward**（見下方部署驗證步驟），不能只靠這段論述。
+
+> 附帶資訊：DGM 的驅動是 **580.173.02**，已達 CUDA 13.0 的門檻（r580+），所以 DGM
+> 技術上也跑得動 cu130 容器 —— 這與「DGM 之前跑 cu130 正常」一致。仍然選 cu121 是
+> **政策決定**（與 DGX-2 統一），不是能力限制。
+
+##### 那要不要為 sm_89 再包第三顆（cu124 之類的）？→ 不要
+
+直覺會想「找一個 arch list 裡有 `sm_89` 的 wheel」，但**目前實測過的兩顆都沒有 `sm_89`**：
+
+| wheel | 實測 arch flags | 有 sm_89？ |
+|-------|----------------|-----------|
+| `torch 2.5.1+cu121` | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` | ❌ |
+| `torch 2.7.0+cu128` | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120` | ❌ |
+
+CUDA **11.8 起就支援 sm_89**，所以 cu121／cu124／cu126／cu128 在工具鏈層面全都支援它 ——
+但 PyTorch 官方 wheel **刻意不單獨編 `sm_89`**，因為 `sm_86` 的 cubin 本來就能跑 Ada，
+多編一份只是讓 wheel 變大。也就是說：**PyTorch 自己就是靠這個相容性在支援 Ada 卡的**，
+我們不是在用什麼旁門左道。
+
+所以再包一顆 cu124 只會得到「同樣沒有 sm_89、只是 torch 版本不同」的容器，
+卻要付出：production 兩台不再是同一顆容器（正是上一節花力氣統一掉的東西）。
+**淨損。**
+
+真的想要 arch list 命中 `sm_89`，唯一辦法是**從源碼編**並指定
+`TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;8.9;9.0"`。1.5–3 小時 + 30 GB 暫存，
+換到的只是「本來就跑得動的東西改成原生命中」，效能差異對 Pangolin 這種小 conv
+可以忽略。**不做。**
+
+判斷依據：**先跑 DGM 上那個 conv1d forward。** 過了就代表相容性成立、案子結案；
+真的失敗才需要重新考慮（而且那時候正解是源碼編，不是換一顆 prebuilt wheel）。
+若哪天想確認某個候選 wheel 到底有沒有 sm_89，兩分鐘就能查，不必先包容器：
+
+```bash
+python3 -m venv /tmp/archchk && /tmp/archchk/bin/pip install -q \
+    --index-url https://download.pytorch.org/whl/cu124 torch
+/tmp/archchk/bin/python -c \
+    "import torch; print(torch.__version__, torch.version.cuda); print(torch._C._cuda_getArchFlags())"
+rm -rf /tmp/archchk
+```
+
 
 **為什麼不能一顆通吃（已實測確認）。** CUDA 工具鏈層面，12.8/12.9 是唯一同時支援
 sm_70（deprecated 但可編譯）與 sm_120（12.8 才有）的版本 —— ≤12.6 沒有 sm_120，
@@ -475,7 +532,7 @@ import sys, torch
 
 target   = open("/opt/build_target.txt").read().strip()
 required = open("/opt/required_arch.txt").read().strip()
-MACHINE  = {"sm_70": "production：DGM + DGX-2 Tesla V100",
+MACHINE  = {"sm_70": "production：DGX-2 Tesla V100（DGM 的 sm_89 靠 sm_86 相容）",
             "sm_120": "開發機 RTX PRO 6000 Blackwell"}
 
 cuda = torch.version.cuda or ""
@@ -601,12 +658,18 @@ apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True Tesla V100-SXM3-32GB
 
-# ── 3b) DGM（RTX A2000 / sm_86）：同一顆 pangolin_cu121_1.0.0.sif ────────
+# ── 3b) DGM（RTX 2000 Ada / sm_89）：同一顆 pangolin_cu121_1.0.0.sif ─────
+#      ★ 這台最需要實測：sm_89 不在 cu121 的 arch list 內，是靠 sm_86 cubin
+#        同 major 相容才跑得動（推論，不是命中）→ 下面那個 conv1d forward 必跑
 ssh n101569@192.168.84.91
 SIF=/home/pipeline/nextflow_containers/pangolin_cu121_1.0.0.sif
 apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-# 期望：cuda True NVIDIA RTX A2000
+# 期望：cuda True NVIDIA RTX 2000 Ada Generation
+apptainer exec --nv $SIF python3 -c \
+    "import torch; x=torch.randn(1,4,64,device='cuda'); \
+     c=torch.nn.Conv1d(4,8,3).cuda(); print('conv OK', c(x).shape)"
+# 期望：conv OK torch.Size([1, 8, 62])   ← 這行過了才算 sm_86→sm_89 相容真的成立
 
 # ── 4) 版本追溯（第一行是 TARGET，可確認拿到的是哪一顆）────────────────
 #      production 兩台印出來必須完全一樣 —— 這就是統一容器要拿去講的證據

@@ -87,13 +87,15 @@ VCF (nckuh / dragen)                    BAM (WGS only, optional)
 
 ## Hardware Requirements
 
-| Environment | CPU | GPU | RAM | Role |
-|-------------|-----|-----|-----|------|
-| Local (dev) | R9 9950X 16c | RTX PRO 6000 96GB | 128GB | Development & testing |
-| DGM Server | Xeon w7-3565X 32c | RTX 2000 Ada 16GB | 125GB | Clinical deployment |
-| DGX-2 | Xeon Platinum 8168 48c | V100 × 6 | 1.5TB | Batch processing |
+| Environment | CPU | GPU | Compute capability | RAM | Role |
+|-------------|-----|-----|--------------------|-----|------|
+| Local (dev) | R9 9950X 16c | RTX PRO 6000 96GB | `sm_120` (Blackwell) | 128GB | Development & testing |
+| DGM Server | Xeon w7-3565X 32c | RTX 2000 Ada 16GB | `sm_89` (Ada) | 125GB | Clinical deployment |
+| DGX-2 | Xeon Platinum 8168 48c | V100 × 6 | `sm_70` (Volta) | 1.5TB | Batch processing |
 
 > GPU is only required for Pangolin splice scoring (`use_gpu_pangolin = true`). All other steps are CPU-only, so setting it to `false` costs speed but nothing else.
+>
+> Compute capability determines which Pangolin container a host can use — see `--pangolin_sif` below. `sm_70` and `sm_120` are in different major versions from everything else, so no single PyTorch wheel serves both; `sm_89` runs the `sm_86` kernels in the `cu121` wheel under CUDA's same-major binary compatibility.
 
 ---
 
