@@ -201,17 +201,34 @@ def parse_samplesheet(csv_path, pipeline_type_filter = null) {
 // ──────────────────────────────────────────────────────────────
 
 def validate_databases() {
+    // dbNSFP 要檢查「實際會用到的那一份」，不是固定檢查 4.9c。
+    //   --academic_dbnsfp true 時用的是 dbnsfp_academic（5.3a），若只檢查 params.dbnsfp，
+    //   5.3a 缺檔會通過 preflight，然後 VEP 的 dbNSFP plugin 找不到檔案 →
+    //   最壞情況是所有 in-silico 分數欄靜默變 "."（不一定報錯），非常難察覺。
+    //   ⚠️ 布林判斷必須用字串比對：Groovy 對非空字串 "false" 也是 true
+    //      （--academic_dbnsfp false 會被誤判成開啟）。與 snv_annotation.nf /
+    //      parse_csq.nf / banner 三處寫法保持一致。
+    def use_academic = params.academic_dbnsfp.toString().toLowerCase() == 'true'
+    def dbnsfp_in_use = use_academic ? params.dbnsfp_academic : params.dbnsfp
+    def dbnsfp_label  = use_academic ? 'dbNSFP 5.3a（--academic_dbnsfp）' : 'dbNSFP 4.9c'
+
     def checks = [
-        ['VEP cache',  params.vep_cache],
-        ['dbNSFP',     params.dbnsfp],
-        ['LOFTEE dir', params.loftee_dir],
-        ['ClinVar',    params.clinvar],
+        ['VEP cache',   params.vep_cache],
+        [dbnsfp_label,  dbnsfp_in_use],
+        ['LOFTEE dir',  params.loftee_dir],
+        ['ClinVar',     params.clinvar],
     ]
     for (chk in checks) {
         def f = file(chk[1])
         if (!f.exists()) {
             error "[ERROR] ${chk[0]} 不存在：${chk[1]}"
         }
+    }
+
+    // dbNSFP plugin 是靠 tabix 隨機查詢，index 缺了會全欄變 "." 而不報錯
+    if (!file("${dbnsfp_in_use}.tbi").exists()) {
+        error "[ERROR] ${dbnsfp_label} 缺少 tabix index：${dbnsfp_in_use}.tbi\n" +
+              "        建置：tabix -s 1 -b 2 -e 2 ${dbnsfp_in_use}"
     }
 
     // Optional 資料庫（只 warn）

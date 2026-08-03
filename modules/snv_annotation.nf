@@ -260,11 +260,17 @@ process PANGOLIN_SCORE {
     //   容器的 --nv 由 config 的 process_gpu label 依同一參數決定是否加上。
     def use_gpu       = params.use_gpu_pangolin == null ? true
                         : params.use_gpu_pangolin.toString().toLowerCase() == 'true'
+    // ⚠️ use_gpu_lock / pangolin_num_gpus 只宣告在 profile 內（不能放全域 params 區塊，
+    //    那個區塊在 profiles 之後會蓋掉 profile 的值）。但 Nextflow 只要「讀到」未宣告的
+    //    param 就會噴 "WARN: Access to undefined parameter" —— 即使後面接了 ?: 預設值也一樣。
+    //    所以用 containsKey 先問再讀：三個 profile 都已宣告，這層只是保險，
+    //    讓「沒帶 -profile」或「將來新增 profile 忘了宣告」時不會噴 warning 也不會壞。
     // 不用 GPU 就不必搶卡
-    def use_lock      = use_gpu && (params.use_gpu_lock ?: false)
+    def use_lock      = use_gpu &&
+                        (params.containsKey('use_gpu_lock') ? params.use_gpu_lock : false)
     def lock_script   = params.gpu_lock_script
     def unlock_script = params.gpu_unlock_script
-    def num_gpus      = params.pangolin_num_gpus ?: 1
+    def num_gpus      = params.containsKey('pangolin_num_gpus') ? params.pangolin_num_gpus : 1
     def gpu_block = !use_gpu ? """
     export CUDA_VISIBLE_DEVICES=""
     echo "[PANGOLIN] ${sample_id} CPU 模式（use_gpu_pangolin=false）" >&2

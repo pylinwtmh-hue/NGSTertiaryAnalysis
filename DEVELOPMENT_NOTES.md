@@ -95,7 +95,7 @@ apptainer pull --disable-cache \
 │   └── stellarpgx_repo/               ✅ git clone SBIMB/StellarPGx
 ├── tertiary_python_1.0.0.sif
 ├── vep_115.sif
-├── pangolin_1.0.0.sif                 ✅ local + dgm（cu128，sm_75…sm_120）
+├── pangolin_1.0.0.sif                 ✅ local（Blackwell sm_120）+ dgm（A2000 sm_86）
 ├── pangolin_v100_1.0.0.sif            ✅ dgx（cu121，含 sm_70 = V100）
 ├── annotsv_3.5.10.sif
 ├── pharmcat_3.2.0.sif                 ✅ v3.3 新增
@@ -209,15 +209,17 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 | pip index | `download.pytorch.org/whl/cu128` | `download.pytorch.org/whl/cu121` |
 | 實測 arch flags | `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120 compute_120` | `sm_50 sm_60 sm_70 sm_75 sm_80 sm_86 sm_90` |
 | 必須有的 arch | `sm_120` | `sm_70` |
-| 用在哪些 profile | **`local`**（開發機 RTX PRO 6000 Blackwell）<br>**`dgm`**（DGM Server） | **`dgx`**（DGX-2 Tesla V100 ×6） |
+| 用在哪些 profile | **`local`**（開發機 RTX PRO 6000 Blackwell，sm_120）<br>**`dgm`**（DGM，RTX A2000，sm_86） | **`dgx`**（DGX-2 Tesla V100 ×6，sm_70） |
 | 需要的驅動 | CUDA 12.x（不必 r580+） | CUDA 12.x（DGX-2 只有 12.2，cu121 ≤ 12.2 更保險）|
 
 - 切換機制：`nextflow_tertiary.config` 三個 profile 各自宣告 `params.pangolin_sif`，
   `PANGOLIN_SCORE` 用 `container "${params.sif_dir}/${params.pangolin_sif}"`。
   **只能寫在 profile 內**（全域 params 區塊在 `profiles` 之後，會蓋掉 profile 的值）。
-- **DGM 為什麼跟開發機共用 cu128 那顆**：DGM 原本跑舊的 cu130 容器就是正常的，
-  而 cu128 的 arch list（`sm_75…sm_120`）比 cu130（`sm_75 sm_80 sm_90 sm_100 sm_120`）
-  還寬，需要的驅動又更舊 → 跑得動 cu130 就一定跑得動 cu128。只有 V100 需要另一顆。
+- **DGM（RTX A2000 = sm_86）兩顆都能跑**，所以不是限制條件：`sm_86` 同時在 cu121
+  （`sm_50…sm_90`）與 cu128（`sm_75…sm_120`）的 arch list 裡。目前跟開發機共用 cu128
+  那顆，少維護一條部署路徑；佐證是 DGM 原本跑舊的 cu130 容器就正常，而 cu128 的
+  arch list 比 cu130（`sm_75 sm_80 sm_90 sm_100 sm_120`）還寬、需要的驅動又更舊。
+  **只有 DGX-2 的 V100（sm_70）是真的只能用 cu121 那顆。**
 - 分辨手上是哪一顆：`apptainer exec $SIF head -1 /opt/build_versions.txt`
   → `# TARGET=blackwell required_arch=sm_120` 或 `# TARGET=v100 required_arch=sm_70`
 
@@ -251,7 +253,7 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 |------|-----|-------------------|------|
 | DGX-2（production，`-profile dgx`） | Tesla V100 ×6 | **sm_70**（Volta）| `pangolin_v100_1.0.0.sif` |
 | 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）| `pangolin_1.0.0.sif` |
-| DGM Server（`-profile dgm`） | 型號未記錄，但原本跑 cu130 容器正常 → 屬新世代 | ≥ sm_75 | `pangolin_1.0.0.sif` |
+| DGM Server（`-profile dgm`） | RTX A2000（GA106，Ampere）| **sm_86** | `pangolin_1.0.0.sif` |
 
 **為什麼不能一顆通吃（已實測確認）。** CUDA 工具鏈層面，12.8/12.9 是唯一同時支援
 sm_70（deprecated 但可編譯）與 sm_120（12.8 才有）的版本 —— ≤12.6 沒有 sm_120，
@@ -751,6 +753,121 @@ python3 /data/pylin1991/nf-containers/NGStertiary/1_0_0/scripts/build_dbnsfp_pkn
 tabix -s 1 -b 2 -e 2 dbNSFP4.9c_with_pknn_grch38.gz
 ```
 
+### dbNSFP 5.3a（`--academic_dbnsfp true` 用；含 P-KNN 整合）
+
+只有開 `--academic_dbnsfp true` 才會用到。**兩份要並存**（4.9c 是預設的商用路徑，
+5.3a 是學術路徑），不要互相覆蓋。設計理由與欄位差異見後面 §「dbNSFP 5.3a 與
+--academic_dbnsfp」。
+
+```bash
+# 手動下載（與 4.9c 同一個發布頁；官方是 box.com 靜態連結，需登入頁面取得）
+#   ⚠️ 實際用的連結請貼在這行下面，之後重建才追得回同一份
+#   下載頁：https://sites.google.com/site/jpopgen/dbNSFP
+cd /data/pylin1991/GenomicReference/hg38/tertiary/dbnsfp
+unzip ~/Downloads/dbNSFP5.3a.zip
+
+# 合併 per-chromosome 檔 → 單一 bgzip + tabix（流程與 4.9c 完全相同，只換 version）
+#   若解壓後的檔名 pattern 不是 dbNSFP5.3a_variant.chr*.gz，改 version 變數即可
+version=5.3a
+zcat dbNSFP${version}_variant.chr1.gz | head -n1 > h
+zgrep -h -v "^#chr" dbNSFP${version}_variant.chr*.gz \
+    | sort -k1,1 -k2,2n -T /scratch/pylin1991/tmp \
+    | cat h - \
+    | bgzip -c > dbNSFP${version}_grch38.gz
+tabix -s 1 -b 2 -e 2 dbNSFP${version}_grch38.gz
+rm h dbNSFP5.3a_variant.chr*.gz
+
+# 整合 P-KNN（在所有 dbNSFP 欄位後面附加一欄 PKNN_LLR）
+conda activate genome
+python3 /data/pylin1991/nf-containers/NGStertiary/1_0_0/scripts/build_dbnsfp_pknn.py \
+    --dbnsfp   /scratch/pylin1991/GenomicReference_Cache/hg38/tertiary/dbnsfp/dbNSFP5.3a_grch38.gz \
+    --pknn_dir /data/pylin1991/GenomicReference/hg38/tertiary/P_KNN_7 \
+    --output   /scratch/pylin1991/GenomicReference_Cache/hg38/tertiary/dbnsfp/dbNSFP5.3a_with_pknn_grch38.gz
+tabix -s 1 -b 2 -e 2 dbNSFP5.3a_with_pknn_grch38.gz
+```
+
+> ⚠️ **`sort` 不能省，而且要在 `cat h -` 之前。** `zgrep` 串接 `chr*.gz` 的順序是
+> shell glob 的字典序（chr1, chr10, chr11 …），不是座標序。VEP 的 dbNSFP plugin 是
+> **靠 tabix 隨機查詢**，index 建在未排序的檔案上會查不到（表現為分數欄大量變 `.`，
+> 不會報錯）。4.9c 就是在這裡踩過 —— 合併後染色體順序不一致，得重新 `sort` →
+> 重新 `bgzip` → 重新 `tabix`。`-T` 指到 scratch，不然 `/tmp` 會爆。
+>
+> ⚠️ **輸出寫在 scratch**（`/scratch/.../GenomicReference_Cache`）。scratch 不是永久
+> 儲存，重建流程要能重跑；原始 zip 留在 `/data`。
+
+#### 建置後驗證（不需跑 pipeline）
+
+```bash
+cd /scratch/pylin1991/GenomicReference_Cache/hg38/tertiary/dbnsfp
+DB=dbNSFP5.3a_with_pknn_grch38.gz
+
+# 1) tabix index 可用 + 座標真的排好了（隨機取一段查得到才算成功）
+#    ⚠️ dbNSFP 的 #chr 欄不帶 chr 前綴（是 1/2/X），region 要照檔案裡的寫法
+tabix -l $DB | head -3                           # 先看實際 contig 命名
+CHR=$(tabix -l $DB | grep -x -m1 -e 17 -e chr17) # 兩種命名都接
+tabix $DB ${CHR}:7676000-7676500 | wc -l         # TP53 區域，應 > 0
+zcat $DB | cut -f1 | uniq | head -30             # 染色體應成塊且遞增，不是交錯
+
+# 2) 確認 pipeline 要抓的欄位都存在（缺一個 VEP 就整欄變 "."，且不會報錯）
+zcat $DB | head -1 | tr '\t' '\n' | grep -nE \
+  '^(PKNN_LLR|REVEL_score|MutPred2_score|MutPred2_pred|VEST4_score|CADD_phred)$'
+zcat $DB | head -1 | tr '\t' '\n' | grep -nE \
+  '^gnomAD2\.1\.1_exomes_non_cancer_(AF|EAS_AF)$'   # ACMG 用的族群頻率（與 4.9c 對齊）
+zcat $DB | head -1 | tr '\t' '\n' | grep -nE \
+  '^gnomAD4\.1_joint_(AF|EAS_AF)$'                  # 參考欄，不進 ACMG 計分
+
+# 3) PKNN_LLR 真的有值（最後一欄）
+zcat $DB | awk -F'\t' 'NR>1 && $NF!="." {c++} END{print "PKNN_LLR 有值:", c}' | head -1
+
+# 4) build_dbnsfp_pknn.py 的雙向統計（跑的時候印在 stderr，要留存）
+#    重點看「P-KNN 載入但沒被用到」= 0；5.3a 實測零遺漏（P-KNN 原生就是 5.3 產生）
+```
+
+#### 測試（跑 pipeline，`--academic_dbnsfp true`）
+
+```bash
+nextflow -c .../nextflow_tertiary.config run .../main_tertiary.nf -profile local \
+    --samplesheet samplesheet_nckuh.csv \
+    --out_dir /scratch/pylin1991/tertiary_test_53a \
+    --academic_dbnsfp true \
+    -resume
+
+# ⚠️ 換 dbNSFP 會讓 VEP_ANNOTATE 之後的所有步驟重算，-resume 只救得到 PREPARE_VCF。
+#    想同時保留 4.9c 的結果，out_dir 要另開一個（不要蓋掉原本那份）。
+
+# 檢查 1：banner 確認真的換了檔案（不是只有 flag 開著）
+#   main_tertiary.nf 的 banner 印「實際使用」的那一份 + 模式，跑起來就在 console；
+#   事後要查就 grep .nextflow.log（log.info 也會寫進去）
+grep -E "dbNSFP( |\s)*(:|模式)" .nextflow.log | tail -4
+#   期望：dbNSFP : ...dbNSFP5.3a_with_pknn_grch38.gz
+#         dbNSFP 模式 : 5.3a（--academic_dbnsfp 啟用：...）
+#   ※ preflight 現在也會檢查「實際使用的那一份」＋它的 .tbi，缺檔會直接 error 開不了跑
+
+# 檢查 2：輸出的 DBNSFP_VERSION 欄
+TSV=/scratch/pylin1991/tertiary_test_53a/<sample>/03_acmg/<sample>.snv_indel.acmg.tsv
+awk -F'\t' 'NR==1{for(i=1;i<=NF;i++)h[$i]=i} NR>1{print $h["DBNSFP_VERSION"]}' $TSV \
+    | sort | uniq -c            # 期望全部 5.3a
+
+# 檢查 3：新增欄位的有值比例。**要在 missense SNV 母體內看**，
+#         全表比例會被 synonymous/intron/UTR/indel 稀釋成 ~25%（dbNSFP 只收 nsSNV）
+awk -F'\t' -v cols=REVEL_SCORE,CADD_PHRED,PKNN_LLR,MUTPRED2_SCORE,VEST4_SCORE,ALPHAMISSENSE_SCORE '
+  NR==1 { for (i=1;i<=NF;i++) h[$i]=i
+          n=split(cols,want,","); next }
+  $h["CONSEQUENCE"] ~ /missense/ {
+          tot++
+          for (i=1;i<=n;i++) if ($h[want[i]] != "." && $h[want[i]] != "") k[want[i]]++ }
+  END   { printf "missense SNV = %d\n", tot
+          for (i=1;i<=n;i++) printf "  %-20s %6d  %5.1f%%\n", want[i], k[want[i]], 100*k[want[i]]/tot }
+' $TSV
+#   ⚠️ 欄名以輸出 TSV 的 header 為準（見附錄 A 的 81 欄總表）；
+#      對不到會印 0%，那是欄名寫錯不是資料庫壞掉 —— 先用
+#      `head -1 $TSV | tr '\t' '\n' | grep -n .` 對一下。
+```
+
+實測數字（NA12878 WES）見後面 §「驗證（NA12878 WES，`--academic_dbnsfp true`）」：
+missense 母體內 REVEL 95.9%、CADD 99.5%、P-KNN 99.5%、MutPred2 98.9%、AlphaMissense 98.8%。
+**用這組數字當回歸基準** —— 若重建後掉到明顯低於這些，先懷疑 `sort`／tabix，而不是資料庫本身。
+
 ### ClinVar
 
 > ⚠️ NCBI 官方 ClinVar VCF contig 格式是 `1`, `2`（無 chr 前綴），必須 rename 否則 VEP annotation 全部為 `.`
@@ -1057,8 +1174,9 @@ grep "CYP2D6\|CYP2C9\|HLA\|GENE" \
 ### 傳送容器
 ```bash
 # vep_115.sif（約 5GB）
-# pangolin_1.0.0.sif（DGM 用這顆，cu128；原本跑 cu130 正常 → cu128 一定可以）
-#   ※ pangolin_v100_1.0.0.sif 只有 DGX-2 需要，DGM 用不到
+# pangolin_1.0.0.sif（DGM 用這顆，cu128。DGM 是 RTX A2000 = sm_86，
+#   cu121/cu128 兩顆都有 sm_86，共用 cu128 是為了少維護一條部署路徑）
+#   ※ pangolin_v100_1.0.0.sif 只有 DGX-2 的 V100 需要，DGM 用不到
 # tertiary_python_1.0.0.sif
 scp /data/pylin1991/nf-containers/*.sif \
     n101569@192.168.84.91:/home/pipeline/nextflow_containers/
