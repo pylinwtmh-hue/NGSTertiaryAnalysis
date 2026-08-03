@@ -1,9 +1,14 @@
 # 臨床三級分析 Pipeline 使用說明
 
-**版本：v3.5**
-**更新日期：2026-07-23**
+**版本：v3.6**
+**更新日期：2026-08-03**
 **負責人：林伯昱（p88124019@gs.ncku.edu.tw）**
 
+> v3.6 更新：ClinGen 專家判讀對照（ERepo）、`--academic_dbnsfp`（dbNSFP 5.3a + 新 in-silico
+> 工具）、PVS1 改為 ClinGen SVI 決策樹分級、新增 DGX-2 profile（含 GPU lock）、
+> Pangolin 可切 CPU/GPU。SNV/indel 表由 65 欄擴充為 **81 欄**（新欄位一律附加在最後，
+> 既有欄位位置不變）。
+>
 > v3.5 更新：新增 `STRAND_BIAS` 欄位（SNV/indel 表）、DRAGEN 原生 ploidy QC
 > （`00_prepare/{SAMPLE_ID}.ploidy_qc.txt`），並修正 DRAGEN mito 已納入 annotation 的說明。
 
@@ -160,6 +165,43 @@ nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
 
 **WES 注意：** WES 樣本無 BAM，StellarPGx 和 OptiType 自動跳過，只跑 PharmCAT（VCF-only 模式），速度快很多。
 
+#### `--academic_dbnsfp`（換用 dbNSFP 5.3a，預設關閉）
+
+預設用 **dbNSFP 4.9c**，裡面的工具全部可商用。加上 `--academic_dbnsfp true` 會改用
+**dbNSFP 5.3a**，並多抓四個預測工具：**REVEL、MutPred2、VEST4、CADD_phred**。
+
+> ⚠️ 這四個工具多為「**學術免費、商業使用需另行授權**」（CADD 尤其明確），所以不放在預設路徑。
+> 收費臨床服務請維持關閉。
+
+```bash
+nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
+    run /home/pipeline/tertiary_code/main_tertiary.nf \
+    -profile dgm \
+    --academic_dbnsfp true \
+    --samplesheet /home/pipeline/samplesheet_nckuh.csv \
+    --out_dir /home/pipeline/tertiary_output \
+    -resume
+```
+
+**兩種模式的差別：**
+
+| | 預設（4.9c）| `--academic_dbnsfp true`（5.3a）|
+|---|---|---|
+| ACMG 計分用的族群頻率 | gnomAD 2.1.1 exomes（整體）| gnomAD 2.1.1 exomes（non_cancer 子集）|
+| P-KNN（GUI 排序主訊號）| 有 | 有，且覆蓋更完整（P-KNN 原生就是 5.3 產生）|
+| REVEL / MutPred2 / VEST4 / CADD | 空值 `.` | 有值 |
+| gnomAD 4.1 參考欄位 | 空值 `.` | 有值 |
+| `DBNSFP_VERSION` 欄 | `4.9c` | `5.3a` |
+
+**重點：ACMG 判讀基準不會因為換版而改變。** 兩種模式的 ACMG 都用 gnomAD 2.1.1，新加的工具與
+gnomAD 4.1 **只是參考欄位，不參與計分**。執行時 banner 會印出實際使用的 dbNSFP 檔案路徑，
+可用來核對。
+
+#### Pangolin 的 GPU / CPU
+
+Pangolin 是唯一需要 GPU 的步驟。沒有 GPU 的機器加上 `--use_gpu_pangolin false` 即可改走 CPU
+（較慢，結果相同），其他步驟完全不受影響。
+
 #### 進階：用 `--pipeline_type` 過濾混合 sample sheet
 
 如果 sample sheet 混有 `nckuh` 和 `dragen` 兩種，可以用 `--pipeline_type` 指定這次只跑哪種，不符合的 row 會 warn 後跳過：
@@ -203,7 +245,7 @@ nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
 │   ├── {SAMPLE_ID}.pangolin.vcf.gz                ← Splice variant 分數（中間檔）
 │   └── {SAMPLE_ID}.pangolin.vcf.gz.tbi
 ├── 03_acmg/
-│   └── {SAMPLE_ID}.snv_indel.acmg.tsv             ← ★ SNV/Indel 最終輸出（65 欄）
+│   └── {SAMPLE_ID}.snv_indel.acmg.tsv             ← ★ SNV/Indel 最終輸出（81 欄）
 ├── 04_mito/                                        ← ★ v3.2 新增
 │   ├── {SAMPLE_ID}.mito.tsv                       ← mtDNA 輸出（21 欄）
 │   └── {SAMPLE_ID}.mito.vep.vcf.gz               ← VEP 中間檔
@@ -226,7 +268,10 @@ nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
 
 ---
 
-### 主要輸出欄位（snv_indel.acmg.tsv，65 欄）
+### 主要輸出欄位（snv_indel.acmg.tsv，81 欄）
+
+> v3.6 起由 65 欄擴充為 81 欄。**新欄位一律附加在最後**，既有欄位的位置沒有變動，
+> 用欄位編號取值的舊腳本不受影響（但新欄位的編號請以本節為準）。
 
 #### 位置資訊（欄 1–5）
 | 欄位 | 說明 |
@@ -325,13 +370,71 @@ nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
 |------|------|
 | HGNC_ID | HGNC 基因識別碼（GUI 組 URL：`https://www.genenames.org/data/gene-symbol-report/#!/hgnc_id/{ID}`）|
 
-#### ACMG 分類（欄 62–65）
+#### ClinGen 專家判讀對照（欄 62–64，v3.6 新增）
+ClinGen Evidence Repository（ERepo）收錄各 **VCEP 專家小組**的變異判讀，含他們實際套用了哪些
+ACMG criteria。以 ClinVar Variation ID 對照到我們的表。
+
+| 欄位 | 說明 |
+|------|------|
+| CLINGEN_VCEP_CLASS | 專家小組的判讀結論 |
+| CLINGEN_VCEP_CRITERIA | 專家實際套用的 criteria（如 `PVS1,PM2_Supporting,PP3`）|
+| CLINGEN_VCEP_PANEL | 哪個 VCEP 判的 |
+
+> **只作對照、不進計分。** ClinGen SVI 2018 建議不要用 PP5/BP6（拿他人判讀當證據會變成循環
+> 論證），本 pipeline 也未實作 PP5/BP6。實測 NA12878 WES 有 77 個變異被專家判讀過。
+
+#### dbNSFP 5.3a 專屬工具與 gnomAD 4.1（欄 65–72，v3.6 新增）
+| 欄位 | 說明 |
+|------|------|
+| REVEL / MUTPRED2 / MUTPRED2_PRED / VEST4 / CADD_PHRED | 只有 `--academic_dbnsfp true` 才有值 |
+| GNOMAD41_JOINT_AF / GNOMAD41_JOINT_EAS_AF | gnomAD 4.1 joint（exomes+genomes，~80 萬人）**參考用，不進計分** |
+| DBNSFP_VERSION | 這批分數來自 `4.9c` 或 `5.3a` |
+
+> 覆蓋率說明：這些工具只涵蓋 **missense SNV**（dbNSFP 本身就只收 nsSNV），synonymous /
+> intron / UTR / indel 一律為 `.`，屬正常。實測在 missense SNV 母體內：CADD 99.5%、
+> P-KNN 99.5%、MutPred2 98.9%、AlphaMissense 98.8%、REVEL 95.9%。
+
+#### PVS1 決策樹輸入（欄 73–74，v3.6 新增）
+| 欄位 | 說明 |
+|------|------|
+| NMD | VEP NMD plugin：預測**逃過** NMD 時才有值；空值代表會被 NMD 降解 |
+| PROTEIN_POSITION | `123/456` 格式，用來算截斷掉多少比例的蛋白質 |
+
+#### ACMG 分類（欄 75–78）
 | 欄位 | 說明 |
 |------|------|
 | ACMG_CRITERIA | 觸發的所有 criteria，逗號分隔（如 `PVS1,PM2_Supporting`）|
 | ACMG_SCORE | 數值化分數（越高越可能致病，用於排序）|
 | ACMG_CLASS | `Pathogenic` / `Likely_Pathogenic` / `VUS` / `Likely_Benign` / `Benign` |
 | ACMG_NOTES | 觸發原因說明，含數值依據（如 `PVS1:LOFTEE=HC,gene=MECP2,HI=3`）|
+
+#### 與專家判讀的一致性 + PVS1 分級（欄 79–81，v3.6 新增）
+| 欄位 | 說明 |
+|------|------|
+| CLINGEN_AGREEMENT | `AGREE`（同一級）/ `DIFFER_TIER`（方向相同、強度不同）/ `DIFFER`（方向不同 → **優先人工複核**）/ `.`（無專家判讀）|
+| PVS1_STRENGTH | `PVS1` / `PVS1_Strong` / `PVS1_Moderate` / `PVS1_Supporting` / `.` |
+| PVS1_REASON | 決策樹走了哪條分支，供人工複核 |
+
+**PVS1 為什麼會分級？**（ClinGen SVI, Abou Tayoun 2018）
+
+舊版只要「LOFTEE 高信心 + 該基因 LoF 致病」就給滿分 8 分。但 SVI 指出這樣過度樂觀：即使是
+predicted LoF，若**逃過 NMD**、只截掉蛋白尾端、或落在非關鍵區域，實際影響有限，應該降級。
+
+| 情境 | 判定 | 分數 |
+|------|------|------|
+| nonsense / frameshift / splice±1,2 且**會被 NMD 降解** | `PVS1` | 8 |
+| 逃過 NMD，但落在**已知功能域** | `PVS1_Strong` | 4 |
+| 逃過 NMD，且**移除 >10% 蛋白質** | `PVS1_Strong` | 4 |
+| 逃過 NMD，只截尾一點點 | `PVS1_Moderate` | 2 |
+| 起始密碼子 `start_lost`（SVI 上限） | `PVS1_Moderate` | 2 |
+| LOFTEE 低信心、或該基因 LoF 非致病機轉（ClinGen HI≠3）| 不觸發 | 0 |
+
+> **這會改變判讀結果**：逃過 NMD 又只截尾的變異，可能從 `Likely_Pathogenic` 降到 `VUS`。
+> 這正是決策樹的目的，但看到判讀與舊版不同時請以 `PVS1_REASON` 核對原因。
+>
+> 另外，`PVS1_STRENGTH` 有值但 `ACMG_CLASS` 是 `Benign` **不是矛盾** —— BA1（族群 AF > 5%）
+> 是 stand-alone benign，會蓋過一切；`PVS1_STRENGTH` 仍獨立記錄決策樹的評估（「是 LoF 但族群
+> 常見」本身就是有用的資訊）。
 
 ---
 
@@ -531,7 +634,7 @@ SAMPLE_ID=26WE0001
 TSV=/home/pipeline/tertiary_output/${SAMPLE_ID}/03_acmg/${SAMPLE_ID}.snv_indel.acmg.tsv
 
 echo "========================================="
-echo "Step 1：欄位數（應為 65）"
+echo "Step 1：欄位數（應為 81）"
 echo "========================================="
 head -1 $TSV | tr '\t' '\n' | wc -l
 
@@ -565,14 +668,14 @@ echo ""
 echo "========================================="
 echo "Step 6：ACMG 分類分布"
 echo "========================================="
-awk -F'\t' 'NR>1 {print $64}' $TSV | sort | uniq -c | sort -rn
+awk -F'\t' 'NR>1 {print $77}' $TSV | sort | uniq -c | sort -rn
 
 echo ""
 echo "========================================="
 echo "Step 7：P/LP variant 詳細資訊"
 echo "========================================="
-awk -F'\t' 'NR>1 && ($64=="Pathogenic" || $64=="Likely_Pathogenic")' $TSV \
-    | cut -f1,2,6,11,62,63,64,65 | head -10
+awk -F'\t' 'NR>1 && ($77=="Pathogenic" || $77=="Likely_Pathogenic")' $TSV \
+    | cut -f1,2,6,11,75,76,77,78,80 | head -10   # GENE/HGVS/ACMG 4 欄 + PVS1_STRENGTH
 
 echo ""
 echo "========================================="

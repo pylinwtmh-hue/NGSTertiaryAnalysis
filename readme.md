@@ -1,7 +1,7 @@
-# 三級分析 Pipeline 開發筆記（v3.5）
+# 三級分析 Pipeline 開發筆記（v3.6）
 
 **負責人：** 林伯昱（p88124019@gs.ncku.edu.tw）
-**最後更新：** 2026-06-15
+**最後更新：** 2026-08-03
 
 ---
 
@@ -16,6 +16,7 @@
 7. [PGx Module 建置記錄](#pgx-module-建置記錄)
 8. [踩雷記錄（完整版）](#踩雷記錄)
 9. [v3.5 更新記錄](#v35-更新記錄)
+10. [v3.6 更新記錄](#v36-更新記錄)
 
 ---
 
@@ -77,6 +78,8 @@ apptainer pull --disable-cache \
 │   │   ├── parse_str_vcf.py
 │   │   ├── prepare_sv_dragen.py
 │   │   ├── parse_dragen_ploidy.py       ✅ v3.5（DRAGEN ploidy.vcf → ploidy_qc.txt，NDC 與二級統一）
+│   │   ├── build_clingen_erepo_lookup.py ✅ v3.6（ERepo → VCEP 判讀查表）
+│   │   ├── build_dbnsfp_pknn.py         （dbNSFP + P-KNN 合併；4.9c/5.3a 通用）
 │   │   ├── acmg_classifier.py
 │   │   ├── parse_pgx_report.py        ✅ v3.4（PharmCAT JSON → pgx.tsv）
 │   │   ├── build_outside_calls.py     ✅ v3.4（StellarPGx + OptiType → outside calls）
@@ -929,3 +932,104 @@ hg38 的 HLA reads 分散在三處：
   MT-RNR1 reference）、不一致 2（CYP2D6 結構型排列、DPYD 我們 Indeterminate vs DRAGEN 解出 `*6`）、
   HLA-A/B 因 DRAGEN 無此基因不動。
 
+
+---
+
+## v3.6 更新記錄
+
+### ClinVar 版本同步（config）
+
+`params.clinvar`（VEP `--custom`，供 CLNSIG/CLNREVSTAT/CLNDN/CLNSIGCONF）與
+`params.clinvar_lookup_tsv`（`parse_vep_csq.py` 查 Variation ID）**必須是同一個 ClinVar
+release**。先前只重建了 lookup（2026-07），VCF 還停在 20260510 → 同一變異的致病性與 ID 會來自
+不同版本。已改指 `clinvar_20260720.vcf.gz`，並在 config 註記此規則與 chr 改名＋tabix 的前提。
+
+### ClinGen Evidence Repository 對照（build_clingen_erepo_lookup.py）
+
+ERepo = 各 VCEP 專家小組的變異判讀，含**實際套用的 ACMG criteria**。以 ClinVar Variation ID
+對照進我們的表，新增 `CLINGEN_VCEP_CLASS/_CRITERIA/_PANEL` 與 `CLINGEN_AGREEMENT`
+（`AGREE` / `DIFFER_TIER` / `DIFFER` / `.`）。
+
+- **只作對照、不進計分**：ClinGen SVI 2018 建議不要用 PP5/BP6（拿他人判讀當證據 = 循環論證），
+  本 pipeline 亦未實作 PP5/BP6。
+- 下載：`https://erepo.clinicalgenome.org/evrepo/api/summary/classifications/download`（TSV，20 欄）
+- 實測 13,039 筆 → 輸出 12,852 個變異（98.6%）。
+- **踩雷 1｜分隔符判斷**：原本從前 4KB 判斷 tab/comma，但 `HGVS Expressions` 欄一列就有 20+ 個
+  逗號分隔的 HGVS → 被誤判成 CSV，整個 header 塌成一欄。改成**只看 header 那一行**。
+- **踩雷 2｜Retracted**：ERepo 有已撤回的判讀（實測 8 筆），拿來當對照基準會誤導 → 過濾掉。
+- **踩雷 3｜5% 沒有 ClinVar ID**：只有 Allele Registry ID。改用 HGVS 裡的 **GRCh38** accession
+  （同列並存 NCBI36/GRCh37/GRCh38，必須指名 GRCh38）組 `chr:pos:ref:alt` 當備援 key，
+  救回 511 筆；del/dup 的 g. 寫法無明確 REF/ALT，無法救（169 筆）。
+
+### dbNSFP 5.3a 與 --academic_dbnsfp
+
+- `--academic_dbnsfp true` → VEP 改用 5.3a，並多抓 REVEL / MutPred2 / VEST4 / CADD_phred。
+  這些多為「學術免費、商業需授權」（CADD 尤其明確），故不放預設路徑。
+- **不用 tabix 事後查表**：dbNSFP 分數欄是 `;` 分隔的多轉錄本值，自己查表等於重寫 VEP plugin
+  的轉錄本配對邏輯，風險高；**也不跑兩輪 VEP**（VEP 是最慢的一步）。改為單次 VEP 切換檔案。
+- **ACMG 基準不動**：兩版都用 gnomAD **2.1.1** exomes（4.9c 為整體；5.3a 只有子集 → 取
+  `non_cancer`，~118k 最接近整體 ~125k）。gnomAD 4.1 另開 `GNOMAD41_JOINT_*` 參考欄，不計分。
+  影響面實測很窄：`GNOMAD_E_AF_DBNSFP` 根本沒進 ACMG（純顯示），`GNOMAD_E_EAS_AF_DBNSFP`
+  只在 AR/XL 的 PM2 作為 `min_eas_af()` 四個來源之一。
+- 欄位取聯集且**附加在最後**，GUI schema 固定；`DBNSFP_VERSION` 記錄實際版本。
+
+### P-KNN 合併：CSV 引號 bug（build_dbnsfp_pknn.py）
+
+- **症狀**：P-KNN 有值、dbNSFP 也有完全相同的 pos/ref/alt，合併後卻是 `.`（chr1 實測 314 筆）。
+- **原因**：部分 P-KNN 行有「引號包住、內含逗號」的欄位（如 `"Pathogenic,_no_conflicts"`），
+  `line.split(",")` 會在引號內切開 → 欄位整體位移 → 第 21 欄（LLR）拿到 `_no_conflicts"` →
+  `float()` 失敗 → **靜默跳過**。改用 `csv.reader`（處理引號）並放寬 `field_size_limit`。
+- **雙向統計**：每條染色體印出「dbNSFP 有/無 LLR」＋「P-KNN 載入/被用到/**沒被用到**」。
+  沒被用到 > 0 才是 key 對不上的警訊。無 LLR 的列另依 aaref/aaalt 分成 nonsense / stoploss /
+  non-coding·splice / synonymous / **missense**——P-KNN 是 missense-only，只有 missense 對不到
+  才是真問題。
+- **實測結論**：5.3a 零遺漏；4.9c 較差是因為 P-KNN 原生就是 5.3 產生（版本落差），非 bug。
+  剩下對不到的 missense 約 1.8%，是 P-KNN 只用 **MANE Select** 產生所致（設計選擇）。
+
+### PVS1 改為 ClinGen SVI 決策樹（Abou Tayoun 2018）
+
+舊版：LOFTEE HC + ClinGen HI=3 → 直接 8 分。SVI 指出過度樂觀，應依情境降級：
+
+| 情境 | 判定 | 分數 |
+|------|------|------|
+| nonsense/frameshift/splice±1,2 且會被 NMD 降解 | `PVS1` | 8 |
+| 逃過 NMD + 落在功能域 | `PVS1_Strong` | 4 |
+| 逃過 NMD + 移除 >10% 蛋白 | `PVS1_Strong` | 4 |
+| 逃過 NMD + 只截尾 | `PVS1_Moderate` | 2 |
+| `start_lost`（SVI 上限） | `PVS1_Moderate` | 2 |
+
+- 支撐資料：VEP 掛官方 **NMD plugin**（`NMD.pm` 單檔 bind，不必重建容器）＋ `--total_length`
+  （讓 `Protein_position` 變 `123/456` 以算截斷比例）。
+- 新增 `PVS1_STRENGTH` / `PVS1_REASON` 欄，可直接篩「被降級的 LoF」。
+- **已知簡化**（都寫在 `PVS1_REASON`）：關鍵功能區以 VEP `DOMAINS` 非空代理；未實作「下游 LoF
+  在族群中常見」分支；in-frame exon skipping 以 NMD 預測＋截斷比例近似。
+- ⚠️ **會改變判讀**：逃過 NMD 又只截尾者可能由 `Likely_Pathogenic` 降為 `VUS`。
+- `PVS1_STRENGTH` 有值但 `ACMG_CLASS=Benign` 不是矛盾 —— BA1 是 stand-alone benign 會蓋過一切。
+
+### DGX-2 profile + GPU lock + Pangolin CPU/GPU
+
+- 新增 `dgx` profile：ref_dir/sif_dir 沿用二級 DGX 那份，code 放 `tertiary_code/`，
+  掛載 `/datalake_Intermediate,/datalake_Raw,/raid`，`process_high` 48 cores。
+- `PANGOLIN_SCORE` 接上二級同一組 `gpu_lock.sh`／`gpu_unlock.sh`（`trap EXIT` 保證還卡），
+  `maxForks = 6`（六張 V100）。卡號不寫死，由 lock 動態分配。
+- `use_gpu_pangolin` 原本**宣告了卻沒有任何 .nf 使用**（純裝飾）。現已接上：關閉時 export
+  空的 `CUDA_VISIBLE_DEVICES` 讓 PyTorch 走 CPU，且 profile 不加 `--nv`，可部署到無 GPU 環境。
+
+### 踩雷：Groovy 布林與 params 覆蓋順序
+
+- **`as boolean` 對字串一律 true**：`--academic_dbnsfp false` 會被判成開啟。一律用
+  `params.X.toString().toLowerCase() == 'true'`。三處（snv_annotation / parse_csq / banner）
+  必須用同一種寫法，否則 `DBNSFP_VERSION` 會與實際使用的檔案不一致。
+- **全域 params 會蓋掉 profile**（本檔全域區塊在 profiles 之後，晚出現者勝）：`use_gpu_lock`
+  一度被宣告在全域 `false`，會讓 dgx 的 `true` 失效。**只在 profile 內宣告**。
+  （`use_gpu_pangolin` 同樣被覆蓋，但因為沒人使用所以一直沒被發現。）
+- **banner 印錯資料庫**：原本寫死印 `params.dbnsfp`，開了 academic flag 仍顯示 4.9c。
+  評鑑需要能證明用了哪個資料庫 → 改印實際使用的檔案＋模式。
+
+### 驗證（NA12878 WES，`--academic_dbnsfp true`）
+
+81 欄、`DBNSFP_VERSION=5.3a`；REVEL/MutPred2/VEST4/CADD 各約 25–26%（全表），在 **missense SNV
+母體內** 為 REVEL 95.9%、CADD 99.5%、P-KNN 99.5%、MutPred2 98.9%、AlphaMissense 98.8%；
+非 missense（synonymous/intron/UTR/indel）一律 `.`，符合 dbNSFP 只收 nsSNV 的設計。
+未命中的 missense 多為 PRAMEF 家族等旁系同源區，屬各工具自身覆蓋限制。
+ClinGen 對照 77 筆（AGREE 71 / DIFFER_TIER 4 / DIFFER 2）；PVS1 分級 40 `PVS1` + 5 `PVS1_Strong`。

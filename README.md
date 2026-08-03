@@ -50,12 +50,12 @@ VCF (nckuh / dragen)                    BAM (WGS only, optional)
 │       ↓                         │     │  STR:  GangSTR/ExpansionHunter   │
 │  Pangolin (splice, GPU)         │     │        + STRchive → str.tsv      │
 │       ↓                         │     │                                  │
-│  PARSE_CSQ (61 columns)         │     │  CNV/SV: AnnotSV 3.5.10          │
+│  PARSE_CSQ (74 columns)         │     │  CNV/SV: AnnotSV 3.5.10          │
 │       ↓                         │     │   CNV → cnv.annotated.tsv        │
 │  ACMG classifier                │     │     gCNV[WES]/CNVkit[WGS]/DRAGEN │
 │  (ClinGen SVI 2022)             │     │   SV  → sv.annotated.tsv         │
 │       ↓                         │     │     Delly[NCKUH] / DRAGEN sv.vcf │
-│  snv_indel.acmg.tsv (65 cols)   │     └──────────────────────────────────┘
+│  snv_indel.acmg.tsv (81 cols)   │     └──────────────────────────────────┘
 └─────────────────────────────────┘
 
           ┌──────────────────────────────────────────────┐
@@ -348,9 +348,25 @@ wget -c https://ftp.ensembl.org/pub/release-115/variation/indexed_vep_cache/homo
 tar -xzf homo_sapiens_vep_115_GRCh38.tar.gz && rm homo_sapiens_vep_115_GRCh38.tar.gz
 ```
 
-#### dbNSFP 4.9c
+#### dbNSFP 4.9c (default) and 5.3a (optional, `--academic_dbnsfp`)
 
-Download from https://sites.google.com/site/jpopgen/dbNSFP (free registration required). Place the pre-built `dbNSFP4.9c_with_pknn_grch38.gz` + `.tbi` in `${TERTIARY_DIR}/dbnsfp/`.
+Download from https://sites.google.com/site/jpopgen/dbNSFP (free registration required), then
+merge in the P-KNN scores and index:
+
+```bash
+python3 ${SCRIPTS_DIR}/build_dbnsfp_pknn.py     --dbnsfp dbNSFP4.9c_grch38.gz     --pknn_dir ${TERTIARY_DIR}/P_KNN_7     --output dbNSFP4.9c_with_pknn_grch38.gz
+bgzip -d dbNSFP4.9c_with_pknn_grch38.gz && bgzip dbNSFP4.9c_with_pknn_grch38
+tabix -s 1 -b 2 -e 2 dbNSFP4.9c_with_pknn_grch38.gz
+# Same three commands for dbNSFP5.3a_grch38.gz -> dbNSFP5.3a_with_pknn_grch38.gz
+```
+
+Both builds live in `${TERTIARY_DIR}/dbnsfp/`. The merge reports, per chromosome, how many P-KNN
+entries were used versus never matched, and breaks the unmatched dbNSFP rows down by amino-acid
+change — P-KNN is missense-only, so nonsense, stop-loss and splice rows are expected to have no
+score, and only unmatched *missense* indicates a real problem.
+
+> P-KNN was generated from dbNSFP 5.3, so the 5.3a build carries it with essentially complete
+> coverage; on 4.9c a small fraction of entries cannot be placed because the two releases differ.
 
 #### LOFTEE data files
 
@@ -433,13 +449,20 @@ tar xzf Annotations_Human_3.5.tar.gz -C share/AnnotSV/
 rm Annotations_Human_3.5.tar.gz
 ```
 
-#### ClinGen (PVS1 HI + MOI)
+#### ClinGen (PVS1 HI + MOI + VCEP expert curations)
 
 ```bash
 mkdir -p ${TERTIARY_DIR}/clingen && cd ${TERTIARY_DIR}/clingen
 wget https://ftp.clinicalgenome.org/ClinGen_gene_curation_list_GRCh38.tsv
 wget "https://search.clinicalgenome.org/kb/gene-validity/download"     -O clingen_gene_disease_validity.csv
 python3 ${SCRIPTS_DIR}/build_gene_moi.py     --clingen_gene clingen_gene_disease_validity.csv     --output gene_moi.tsv.gz
+
+# Evidence Repository: per-variant VCEP interpretations incl. the ACMG criteria applied.
+# Optional — without it the CLINGEN_VCEP_* columns are simply ".".
+curl -sSL -o erepo_all.tsv "https://erepo.clinicalgenome.org/evrepo/api/summary/classifications/download"
+python3 ${SCRIPTS_DIR}/build_clingen_erepo_lookup.py     --input erepo_all.tsv     --output clingen_erepo_lookup.tsv.gz
+# Echoes the detected column mapping; retracted curations are dropped. ~12.8k variants,
+# keyed on ClinVar Variation ID with a GRCh38 coordinate fallback for the ~5% that lack one.
 ```
 
 #### PharmCAT positions VCF (for GATK gVCF step)
@@ -554,6 +577,8 @@ nextflow -c nextflow_tertiary.config run main_tertiary.nf \
 | `--run_pgx` | `true` | Enable PGx module (PharmCAT + GATK gVCF + MT-RNR1) |
 | `--run_pgx_cyp2d6` | `true` | Enable StellarPGx CYP2D6 caller (requires BAM, WGS only) |
 | `--run_pgx_hla` | `true` | Enable OptiType HLA-A/B typing (requires BAM, WGS only) |
+| `--academic_dbnsfp` | `false` | Use dbNSFP 5.3a instead of 4.9c and additionally pull REVEL, MutPred2, VEST4 and CADD_phred. Those are free for academic use but need a commercial licence (CADD explicitly), so the default path stays on 4.9c and remains commercially usable. ACMG keeps scoring against gnomAD 2.1.1 in both modes. |
+| `--use_gpu_pangolin` | `true` | Pangolin is the only GPU step; set `false` to run it on CPU (slower, same results) on a host without a GPU |
 
 ---
 
@@ -567,7 +592,7 @@ nextflow -c nextflow_tertiary.config run main_tertiary.nf \
 ├── 01_vep/              {SAMPLE_ID}.vep.vcf.gz       VEP 115 annotated (intermediate)
 ├── 02_pangolin/         {SAMPLE_ID}.pangolin.vcf.gz  Pangolin splice (intermediate)
 ├── 03_acmg/
-│   └── {SAMPLE_ID}.snv_indel.acmg.tsv     ★ SNV/Indel (65 columns)
+│   └── {SAMPLE_ID}.snv_indel.acmg.tsv     ★ SNV/Indel (81 columns)
 ├── 04_mito/
 │   ├── {SAMPLE_ID}.mito.tsv               ★ mtDNA variants (21 columns)
 │   └── {SAMPLE_ID}.mito.vep.vcf.gz         VEP-annotated mito VCF
@@ -594,9 +619,10 @@ nextflow -c nextflow_tertiary.config run main_tertiary.nf \
 > **DRAGEN-only** (built from DRAGEN's native ploidy.vcf, unified with secondary's mosdepth ploidy
 > QC); for NCKUH the equivalent lives in secondary `03_alignment_qc/`.
 
-### 03_acmg — `{SAMPLE_ID}.snv_indel.acmg.tsv` (65 columns)
+### 03_acmg — `{SAMPLE_ID}.snv_indel.acmg.tsv` (81 columns)
 
-The primary SNV/indel table (`parse_vep_csq.py` 61 columns + 4 ACMG columns):
+The primary SNV/indel table (`parse_vep_csq.py` 74 columns + 7 ACMG columns). Columns added
+after the initial release are appended at the end, so existing column positions never shift:
 
 | Group | Columns |
 |-------|---------|
@@ -610,7 +636,11 @@ The primary SNV/indel table (`parse_vep_csq.py` 61 columns + 4 ACMG columns):
 | In-silico | `BAYESDEL_NOAF(_PRED) ALPHAMISSENSE(_PRED) ESM1B(_PRED) VARITY_R SIFT(_PRED) DANN PHACTBOOST PHYLOP100 GERP PKNN_LLR PKNN_EVIDENCE` |
 | Splice | `PANGOLIN_SCORE PANGOLIN_DETAIL` |
 | Protein / gene | `DOMAINS SWISSPROT HGNC_ID` |
-| ACMG | `ACMG_CRITERIA ACMG_SCORE ACMG_CLASS ACMG_NOTES` |
+| ClinGen VCEP (comparison only) | `CLINGEN_VCEP_CLASS CLINGEN_VCEP_CRITERIA CLINGEN_VCEP_PANEL` |
+| dbNSFP 5.3a tools (`--academic_dbnsfp`) | `REVEL MUTPRED2 MUTPRED2_PRED VEST4 CADD_PHRED` |
+| gnomAD 4.1 (reference only) | `GNOMAD41_JOINT_AF GNOMAD41_JOINT_EAS_AF` |
+| Provenance / PVS1 inputs | `DBNSFP_VERSION NMD PROTEIN_POSITION` |
+| ACMG | `ACMG_CRITERIA ACMG_SCORE ACMG_CLASS ACMG_NOTES CLINGEN_AGREEMENT PVS1_STRENGTH PVS1_REASON` |
 
 - **`CALLERS`**: NCKUH = `DV` / `HC` / `DV+HC`; DRAGEN = `DRAGEN`.
 - **`STRAND_BIAS`**: `PASS` / `WARN(FS=..,SOR=..)` from FisherStrand + StrandOddsRatio (GATK
@@ -618,6 +648,20 @@ The primary SNV/indel table (`parse_vep_csq.py` 61 columns + 4 ACMG columns):
   (DeepVariant-only records) → flag for manual review.
 - **`ACMG_CLASS`**: `Pathogenic` / `Likely_pathogenic` / `VUS` / `Likely_benign` / `Benign`, with
   the triggered rules in `ACMG_CRITERIA` and the point total in `ACMG_SCORE`.
+- **`PVS1_STRENGTH`**: PVS1 is graded with the ClinGen SVI decision tree (Abou Tayoun 2018)
+  rather than applied all-or-nothing — `PVS1` (8 pts) when the premature stop is predicted to
+  trigger NMD, downgraded to `PVS1_Strong` (4) when it escapes NMD but hits a functional domain
+  or removes >10% of the protein, `PVS1_Moderate` (2) when it only truncates the tail or is a
+  start-loss. `PVS1_REASON` records the branch taken. A graded PVS1 alongside `ACMG_CLASS=Benign`
+  is not a contradiction: BA1 is stand-alone benign and overrides everything, while the column
+  still reports what the tree found.
+- **`CLINGEN_VCEP_*` / `CLINGEN_AGREEMENT`**: expert curations from the ClinGen Evidence
+  Repository, joined on ClinVar Variation ID, together with whether our call agrees
+  (`AGREE` / `DIFFER_TIER` / `DIFFER` / `.`). These are a QC comparison and never feed scoring —
+  ClinGen SVI advises against PP5/BP6, which this pipeline does not implement.
+- **`DBNSFP_VERSION`**: `4.9c` or `5.3a`, recording which database produced the in-silico scores.
+  ACMG always reads gnomAD 2.1.1 for allele frequency, in both modes, so switching dbNSFP changes
+  the predictors but not the frequency baseline PM2 scores against.
 
 ### 04_mito — `{SAMPLE_ID}.mito.tsv` (21 columns)
 
