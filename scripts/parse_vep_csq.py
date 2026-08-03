@@ -331,6 +331,20 @@ def parse_csq_fields(vcf_path: str) -> dict:
 def get(tx: dict, field: str) -> str:
     val = tx.get(field, "")
     return val if val else "."
+
+
+def get_any(tx: dict, *fields: str) -> str:
+    """
+    依序嘗試多個 CSQ 欄名，回傳第一個有值的；全都沒有則回 "."。
+    用於 dbNSFP 版本間的欄位改名，例如族群頻率：
+      4.9c → gnomAD_exomes_AF / gnomAD_exomes_EAS_AF
+      5.3a → gnomAD4.1_joint_AF / gnomAD4.1_joint_EAS_AF（改用 gnomAD 4.1 joint）
+    """
+    for f in fields:
+        val = tx.get(f, "")
+        if val:
+            return val
+    return "."
  
  
 # ──────────────────────────────────────────────────────────────
@@ -615,6 +629,11 @@ OUTPUT_COLUMNS = [
     "CLINGEN_VCEP_CLASS",           # 專家小組的判讀結論
     "CLINGEN_VCEP_CRITERIA",        # 專家小組實際套用的 ACMG criteria
     "CLINGEN_VCEP_PANEL",           # 判讀的 VCEP 名稱
+    # dbNSFP 5.3a 專屬預測工具（★ 僅 --academic_dbnsfp 開啟時才有值，否則為 "."）
+    #   這些工具多為「學術免費、商業需另行授權」（CADD 尤其明確），故不放在預設路徑，
+    #   以維持預設流程全部可商用的硬性限制。
+    "REVEL", "MUTPRED2", "MUTPRED2_PRED", "VEST4", "CADD_PHRED",
+    "DBNSFP_VERSION",               # 這批分數來自哪個 dbNSFP（4.9c / 5.3a）
 ]
  
  
@@ -662,7 +681,8 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                   clinvar_lookup: dict, sample_id: str,
                   output_full: str, output_filtered: str,
                   input_type: str = "ensemble",
-                  clingen_erepo: dict | None = None):
+                  clingen_erepo: dict | None = None,
+                  dbnsfp_version: str = "4.9c"):
  
     csq_fields = parse_csq_fields(vep_vcf)
     opener = gzip.open if vep_vcf.endswith(".gz") else open
@@ -817,8 +837,13 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                 gnomad_g_eas_af    = get(picked_tx, "gnomADg_EAS_AF")
                 gnomad_e_af        = get(picked_tx, "gnomADe_AF")
                 gnomad_e_eas_af    = get(picked_tx, "gnomADe_EAS_AF")
-                gnomad_e_af_db     = get(picked_tx, "gnomAD_exomes_AF")
-                gnomad_e_eas_af_db = get(picked_tx, "gnomAD_exomes_EAS_AF")
+                # dbNSFP 版本間欄名不同：4.9c 用 gnomAD exomes（2.1.1 世代），
+                # 5.3a 改為 gnomAD 4.1 joint（exomes+genomes 合併，樣本數大得多）。
+                # 沿用同一組輸出欄位，實際來源由 DBNSFP_VERSION 標示。
+                gnomad_e_af_db     = get_any(picked_tx, "gnomAD_exomes_AF",
+                                                        "gnomAD4.1_joint_AF")
+                gnomad_e_eas_af_db = get_any(picked_tx, "gnomAD_exomes_EAS_AF",
+                                                        "gnomAD4.1_joint_EAS_AF")
                 tg_eas_af          = get(picked_tx, "EAS_AF")
 
                 loftee        = get(picked_tx, "LoF")
@@ -910,6 +935,13 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                     "CLINGEN_VCEP_CLASS":    cg_class,
                     "CLINGEN_VCEP_CRITERIA": cg_criteria,
                     "CLINGEN_VCEP_PANEL":    cg_panel,
+                    # 5.3a 專屬工具：4.9c 模式下 CSQ 沒有這些欄位 → get() 回 "."
+                    "REVEL":                get(picked_tx, "REVEL_score"),
+                    "MUTPRED2":             get(picked_tx, "MutPred2_score"),
+                    "MUTPRED2_PRED":        get(picked_tx, "MutPred2_pred"),
+                    "VEST4":                get(picked_tx, "VEST4_score"),
+                    "CADD_PHRED":           get(picked_tx, "CADD_phred"),
+                    "DBNSFP_VERSION":       dbnsfp_version,
                 }
 
                 row_str = "\t".join(row_dict[col] for col in OUTPUT_COLUMNS) + "\n"
@@ -940,6 +972,8 @@ def main():
     parser.add_argument("--pangolin_vcf",     required=True)
     parser.add_argument("--clinvar_lookup",   required=True,
                         help="clinvar_lookup.tsv.gz（build_clinvar_lookup.py 產生）")
+    parser.add_argument("--dbnsfp_version",   default="4.9c",
+                        help="這次 VEP 用的 dbNSFP 版本（4.9c 或 5.3a），寫入 DBNSFP_VERSION 欄")
     parser.add_argument("--clingen_erepo",    default="NO_FILE",
                         help="clingen_erepo_lookup.tsv.gz（build_clingen_erepo_lookup.py 產生）；"
                              "選用，未提供則 CLINGEN_VCEP_* 欄位為 '.'")
@@ -967,6 +1001,7 @@ def main():
         args.sample_id, args.output_full, args.output_filtered,
         input_type=args.input_type,
         clingen_erepo=clingen_erepo,
+        dbnsfp_version=args.dbnsfp_version,
     )
  
  

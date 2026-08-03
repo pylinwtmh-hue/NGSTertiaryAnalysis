@@ -117,7 +117,23 @@ process VEP_ANNOTATE {
           emit: vep_out
 
     script:
+    // ── dbNSFP 版本切換（--academic_dbnsfp，預設 false）──────────────────────
+    //   false → dbNSFP 4.9c（預設路徑，維持全部工具可商用）
+    //   true  → dbNSFP 5.3a，並額外抓 REVEL / MutPred2 / VEST4 / CADD_phred
+    //           ★ 這些多為「學術免費、商業需另行授權」（CADD 尤其明確），故只在此模式取用。
+    //   兩版都已把 P-KNN 合併進去（PKNN_LLR 為最後一欄），GUI 排序訊號不受影響；
+    //   5.3a 的 P-KNN 覆蓋更完整（P-KNN 本來就是以 dbNSFP 5.3 產生）。
+    //   族群頻率欄名在 5.3a 改了：gnomAD_exomes_* → gnomAD4.1_joint_*（gnomAD 4.1，
+    //   exomes+genomes 合併），parse_vep_csq.py 以 get_any() 相容兩種欄名。
+    def academic   = params.academic_dbnsfp as boolean
+    def dbnsfp_f   = academic ? params.dbnsfp_academic : params.dbnsfp
+    def dbnsfp_af  = academic ? "gnomAD4.1_joint_AF,gnomAD4.1_joint_EAS_AF"
+                              : "gnomAD_exomes_AF,gnomAD_exomes_EAS_AF"
+    def dbnsfp_extra = academic ? ",REVEL_score,MutPred2_score,MutPred2_pred,VEST4_score,CADD_phred"
+                                : ""
     """
+    echo "[VEP_ANNOTATE] dbNSFP = ${dbnsfp_f}" >&2
+
     vep \\
         --input_file ${snv_vcf} \\
         --output_file ${sample_id}.vep.vcf.gz \\
@@ -146,7 +162,7 @@ process VEP_ANNOTATE {
         --flag_pick \\
         --pick_order mane_select,mane_plus_clinical,canonical,appris,tsl,biotype,ccds,rank,length \\
         \\
-        --plugin dbNSFP,${params.dbnsfp},\\
+        --plugin dbNSFP,${dbnsfp_f},\\
 BayesDel_noAF_score,BayesDel_noAF_pred,\\
 AlphaMissense_score,AlphaMissense_pred,\\
 ESM1b_score,ESM1b_pred,\\
@@ -156,8 +172,8 @@ DANN_score,\\
 PHACTboost_score,\\
 phyloP100way_vertebrate,\\
 GERP++_RS,\\
-gnomAD_exomes_AF,gnomAD_exomes_EAS_AF,\\
-PKNN_LLR \\
+${dbnsfp_af},\\
+PKNN_LLR${dbnsfp_extra} \\
         \\
         --plugin LoF,\\
 loftee_path:/opt/vep/Plugins/,\\
