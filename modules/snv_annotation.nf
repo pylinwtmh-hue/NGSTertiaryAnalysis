@@ -244,11 +244,21 @@ process PANGOLIN_SCORE {
     //   Apptainer 預設會把 host 環境變數帶進容器，故 CUDA_VISIBLE_DEVICES 會被 Pangolin
     //   看見；這裡再明確 export 一次，避免 lock script 只設了 MY_GPUS。
     //   非 DGX（local / dgm）use_gpu_lock=false → 走 config 既有的 GPU 設定，不插入此段。
-    def use_lock      = params.use_gpu_lock ?: false
+    // ── GPU / CPU 切換（--use_gpu_pangolin）──────────────────────────────
+    //   Pangolin 以 PyTorch 實作，會自動偵測 CUDA；把 CUDA_VISIBLE_DEVICES 設為空字串
+    //   即可強制走 CPU（慢但結果相同），讓 pipeline 能部署到沒有 GPU 的環境。
+    //   容器的 --nv 由 config 的 process_gpu label 依同一參數決定是否加上。
+    def use_gpu       = params.use_gpu_pangolin == null ? true
+                        : params.use_gpu_pangolin.toString().toLowerCase() == 'true'
+    // 不用 GPU 就不必搶卡
+    def use_lock      = use_gpu && (params.use_gpu_lock ?: false)
     def lock_script   = params.gpu_lock_script
     def unlock_script = params.gpu_unlock_script
     def num_gpus      = params.pangolin_num_gpus ?: 1
-    def lock_block = use_lock ? """
+    def gpu_block = !use_gpu ? """
+    export CUDA_VISIBLE_DEVICES=""
+    echo "[PANGOLIN] ${sample_id} CPU 模式（use_gpu_pangolin=false）" >&2
+    """ : use_lock ? """
     eval \$(bash ${lock_script} ${num_gpus})
     export CUDA_VISIBLE_DEVICES=\${MY_GPUS}
     echo "[PANGOLIN] ${sample_id} 取得 GPU \${MY_GPUS}" >&2
@@ -257,7 +267,7 @@ process PANGOLIN_SCORE {
     echo "[PANGOLIN] ${sample_id} 使用 config 指定的 GPU（未啟用 GPU lock）" >&2
     """
     """
-    ${lock_block}
+    ${gpu_block}
 
     # Step 1：從 VEP 輸出中篩選 splice candidate
     # bcftools view -h → 只取 header 行
