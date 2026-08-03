@@ -194,7 +194,7 @@ apptainer build /data/pylin1991/nf-containers/vep_115.sif /tmp/vep_115.def
 apptainer test /data/pylin1991/nf-containers/vep_115.sif
 ```
 
-### pangolin_1.0.0.sif（Version 1.0.5）
+### pangolin_1.0.0.sif（Version 1.0.6）
 
 **已知踩雷：**
 
@@ -206,48 +206,70 @@ apptainer test /data/pylin1991/nf-containers/vep_115.sif
 | `map(int, ...)` crash on `Y`/`R`/`W` | hg38 部分座標含 IUPAC ambiguity code，`one_hot_encode` 只處理 A/C/G/T/N | `%post` patch 2：`re.sub(r'[^01234]', '0', seq)`（同 N，全零 encoding）|
 | Pangolin segfault（CSQ 過長） | WGS 的 CSQ 可達 270 KB，Pangolin parse 時爆掉 | module 內先 `bcftools annotate -x INFO/CSQ` |
 | Pangolin segfault（alt/random contig） | gencode DB 沒有 `chr*_alt` / `chr*_random` / `chrUn_*` 的 gene model | module 內 `grep -E '^#\|^chr([0-9]+\|[XYM])\t'` 只留標準染色體 |
-| **`RuntimeError: The NVIDIA driver on your system is too old (found version 12020)`** | **`pip install torch` 沒有 pin，PyPI 預設 wheel 已變成 cu130（CUDA 13.0）** | **pin 到 cu121，見下方 §「V100 一定要 pin CUDA 12.x」** |
+| **`RuntimeError: ... driver ... too old (found version 12020)`**（DGX-2） | `pip install torch` 沒有 pin，PyPI 預設 wheel 漂移成 cu130（CUDA 13.0），CUDA 13 已移除 Volta 且需驅動 r580+ | pin 到 **cu128**，見下方 §「一顆 sif 要跨 V100 + Blackwell」 |
+| **`CUDA error: no kernel image is available for execution on the device`**（開發機） | 反方向：cu121 的 wheel 只有 `sm_50…sm_90`，開發機 RTX PRO 6000 Blackwell 是 **sm_120** | 同上。單一 wheel 必須同時含 `sm_70` 與 `sm_120` |
 
-#### ⚠️ V100 一定要 pin CUDA 12.x（2026-08 修正）
+#### ⚠️ 一顆 sif 要跨 V100 (sm_70) + Blackwell (sm_120)（2026-08）
 
-DGX-2 上 `apptainer exec --nv ... torch.cuda.is_available()` 噴：
+這個 pipeline 有兩台目標機器，**GPU 差了三個世代**：
 
-```
-RuntimeError: The NVIDIA driver on your system is too old (found version 12020)
-```
+| 機器 | GPU | compute capability |
+|------|-----|-------------------|
+| DGX-2（production，`-profile dgx`） | Tesla V100 | **sm_70**（Volta）|
+| 開發機（`-profile local`） | RTX PRO 6000 Blackwell Max-Q | **sm_120**（Blackwell）|
 
-`12020` 是**驅動**能提供的 CUDA 版本＝ 12.2（driver 535.x 系列），不是卡的能力。
-真正的原因是容器裡的 torch 是 **CUDA 13.0** 版（舊 def 的 `%labels` 就寫著 `PyTorch cu130`）：
+決定要用哪個 CUDA 的關鍵是**兩條時間線的交集**：
 
-1. **CUDA 13.x 要求驅動 r580+**。CUDA 的 minor version compatibility 只在同一個 major
-   版本內成立（任何 12.x 程式都能跑在 12.0+ 驅動上），跨 major 就是硬噴，不會降級相容。
-2. **更關鍵：CUDA 13.0 在工具鏈層面移除了 Volta（sm_70）支援**，V100 就是 sm_70。
-   所以「請 MIS 升驅動」是**錯的方向** —— 升上去之後錯誤只會從
-   `driver too old` 變成 `no kernel image is available for execution on the device`，
-   而且 V100 從此永久不能用。正解是把 torch 降到 **CUDA 12.x**。
+| CUDA | sm_70（Volta） | sm_120（Blackwell） |
+|------|---------------|--------------------|
+| ≤ 12.6 | ✅ 支援 | ❌ 還沒有 |
+| **12.8 / 12.9** | ✅ 支援（deprecated 但仍可編譯）| ✅ 從 12.8 開始 |
+| 13.0+ | ❌ **已移除** | ✅ |
 
-**根因不是「某次改動被改掉」，而是依賴漂移。** 舊 def 寫的是
+→ **CUDA 12.8 / 12.9 是唯一能同時涵蓋兩者的工具鏈版本。**
+
+⚠️ **但「工具鏈支援」≠「wheel 裡有」**：PyTorch 為了縮小 wheel，官方 build 會自己砍舊
+arch。所以真正要驗的是 wheel 的 arch flags，不是 CUDA 版號。這件事**不要憑印象賭**，
+交給 `%test` 的守門員（見下方）—— 它同時要求 `sm_70` 和 `sm_120`，缺任何一個就讓
+build 直接失敗，不會產出「在某一台機器上一定會爆」的容器。
+
+**若 prebuilt cu128 wheel 沒有 sm_70，依序往下試**（成本由低到高）：
+
+| # | 方案 | 成本 | 備註 |
+|---|------|------|------|
+| 1 | `--index-url .../cu128 torch==2.7.0` | 一次 build | cu128 最早的版本，arch list 通常最寬（版本越新砍越多）|
+| 2 | `--index-url .../cu129 torch==2.8.0` | 一次 build | 12.9 同樣兩邊都支援 |
+| 3 | NGC 容器 `nvcr.io/nvidia/pytorch:<tag>-py3` | 拉 image（大）| NVIDIA 自行編譯，arch list 通常較寬；換 base image 後 patch 路徑要跟著改 |
+| 4 | 從源碼編 torch | **1.5–3 小時、30+ GB 暫存** | base 換 `nvidia/cuda:12.8.0-devel-*`，`TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;9.0;12.0"`。保證成功但容器會肥很多 |
+
+**根因不是「某次改動被改掉」，而是依賴漂移。** 原始 def 寫的是
 
 ```bash
 pip install --no-cache-dir torch torchvision     # ← 沒有 pin
 ```
 
-這行一直都沒有 pin，只是 PyPI 的 `torch` 預設 wheel 原本是 CUDA 12.x 版；
-等 PyTorch 把預設換成 cu130 之後，**同一份 def 檔重建就會產出不同的容器**。
-`%labels` 的 `cu130` 是當時觀察到的結果，正好留下了漂移的證據。
+這行一直都沒有 pin。PyPI 的 `torch` 預設 wheel 原本是 CUDA 12.x，所以當初包起來
+在開發機上一切正常；等 PyTorch 把預設換成 cu130 之後，**同一份 def 檔重建就產出不同的
+容器**。而且 cu130 在開發機（Blackwell）上是**正常的** —— 這就是為什麼本地測試一路綠燈，
+只有部署到 V100 才爆。`%labels` 的 `cu130` 是當時觀察到的結果，正好留下漂移的證據。
 
-**為什麼 build 的時候沒被抓到**：舊 `%test` 只是
+**為什麼 build 的時候沒被抓到**：原始 `%test` 只是
 
 ```bash
 python3 -c "import torch; print('CUDA:', torch.cuda.is_available())"
 ```
 
-`apptainer build` / `apptainer test` 都**不帶 `--nv`**，所以這行永遠印 `False` 而且
-**exit code 是 0**，測試照過。新版 `%test` 改成不需要 GPU 也能驗的硬檢查
-（`torch.version.cuda` 必須是 12.x、arch flags 必須含 `sm_70`），失敗直接讓 build 爆掉。
+`apptainer build` / `apptainer test` 都**不帶 `--nv`**，所以這行在任何機器上都印 `False`
+而且 **exit code 是 0**，測試照過。新版 `%test` 改成不需要 GPU 也能驗的硬檢查
+（arch flags 必須同時含 `sm_70` 與 `sm_120`），失敗直接讓 build 爆掉。
 
 > **SIF 檔名不要改。** `nextflow_tertiary.config` 寫死 `${params.sif_dir}/pangolin_1.0.0.sif`，
 > 版號只放在 `%labels` 裡。改檔名會讓 `PANGOLIN_SCORE` 找不到容器。
+>
+> **不要走這兩條**：升驅動解決不了 arch list 的問題（cu130 升上去只會從 `driver too old`
+> 變成 `no kernel image`，且 V100 永久不能用）；PTX JIT（`CUDA_FORCE_PTX_JIT=1`）
+> 也不行 —— PyTorch wheel 通常不帶舊 arch 的 PTX，而且 cuDNN/cuBLAS 只出 cubin
+> 不出 PTX，conv1d 照樣沒有 kernel。
 
 #### 重建指令
 
@@ -264,21 +286,26 @@ From: python:3.11-slim
         procps bcftools tabix \
         && rm -rf /var/lib/apt/lists/*
 
-    # ── ⚠️ torch 必須 pin 在 CUDA 12.x，且 wheel 要含 sm_70（V100）─────────
+    # ── ⚠️ torch 必須 pin：一顆 sif 要同時跑 V100(sm_70) 和 Blackwell(sm_120) ──
     #   為什麼不能用預設的 `pip install torch`：
-    #     PyPI 的預設 wheel 現在是 cu130（CUDA 13.0）→ 需要驅動 r580+，
-    #     而且 CUDA 13.0 已移除 Volta(sm_70) 支援 → DGX-2 的 V100 永遠跑不起來。
-    #   為什麼選 cu121：
-    #     DGX-2 驅動只到 CUDA 12.2，cu121 <= 12.2 → 完全不依賴 minor-version 相容；
-    #     且 cu121 的官方 wheel 一定含 sm_70 kernel。
-    #   為什麼選 2.5.1：
-    #     cu121 wheel 提供到 torch 2.5.x（2.6 起改成 cu118/cu124/cu126）→
-    #     在「一定有 sm_70」的前提下取最新。torchvision 0.20.1 配 torch 2.5.1。
-    #   若哪天 cu121 索引下架，退而用 cu124（也含 sm_70，靠 minor-version 相容跑在 12.2 驅動上）：
-    #     --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0
+    #     PyPI 預設 wheel 已漂移成 cu130（CUDA 13.0）→ 需要驅動 r580+，
+    #     且 CUDA 13.0 已移除 Volta(sm_70) → DGX-2 的 V100 永遠跑不起來。
+    #     反方向也一樣：cu121/cu126 只有 sm_50…sm_90 → 開發機的 Blackwell 會噴
+    #     "no kernel image is available for execution on the device"。
+    #   為什麼是 cu128：
+    #     CUDA 12.8 是兩條時間線的交集 —— sm_70 還在（deprecated 但可編譯）、
+    #     sm_120 從 12.8 才開始有。12.6 以前沒有 sm_120，13.0 以後沒有 sm_70。
+    #   為什麼是 2.7.0：
+    #     cu128 最早出現的 torch 版本。PyTorch 每次改版都在砍舊 arch，
+    #     所以要 sm_70 就取「有 cu128 的最早版本」，命中率最高。
+    #   ⚠️ 「CUDA 12.8 支援」不等於「這顆 wheel 有包」——
+    #     真正的驗證在 %test（同時要求 sm_70 + sm_120，缺一個就讓 build 失敗）。
+    #     若這個組合過不了，依序試：cu129/torch 2.8.0 → NGC 容器 → 源碼編譯
+    #     （TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6;9.0;12.0"）。見 DEVELOPMENT_NOTES.md。
+    #   torchvision 已移除：Pangolin 不 import 它，留著只是多一個版本配對的束縛。
     pip install --no-cache-dir \
-        --index-url https://download.pytorch.org/whl/cu121 \
-        torch==2.5.1 torchvision==0.20.1
+        --index-url https://download.pytorch.org/whl/cu128 \
+        torch==2.7.0
 
     pip install --no-cache-dir gffutils biopython pandas pyfastx pyvcf3
     pip install --no-cache-dir git+https://github.com/tkzeng/Pangolin.git
@@ -338,11 +365,10 @@ PYEOF
 %test
     pangolin --help 2>&1 | head -3
 
-    # ── ★ 這個容器最重要的守門員：確認 torch 是「V100 能用」的 build ★ ──────
-    #   關鍵設計：這段**不需要 GPU** 也能驗。apptainer build / test 都不帶 --nv，
-    #   所以舊版那行 `print(torch.cuda.is_available())` 永遠印 False 且 exit 0，
-    #   測試永遠會過 —— cu130 就是這樣混過 build、直到部署上 DGX-2 才爆。
-    #   改成 sys.exit(訊息) 後，build 階段就會直接失敗。
+    # ── ★ 這個容器最重要的守門員：一顆 sif 必須同時服務兩台機器 ★ ──────────
+    #   關鍵設計：這段**不需要 GPU** 也能驗，所以在 build 階段就會爆，而不是
+    #   等部署到某一台才發現。原始 def 那行 `print(torch.cuda.is_available())`
+    #   在 build 時永遠印 False 且 exit 0 —— cu130 就是這樣混過自己的測試。
     #   （注意：`apptainer build --notest` 會跳過這段，重建時不要加。）
     python3 - <<'PYEOF'
 import sys, torch
@@ -350,27 +376,44 @@ import sys, torch
 cuda = torch.version.cuda or ""
 print("torch:", torch.__version__, "| built with CUDA:", cuda)
 
-# 檢查 1：CUDA 13.x 移除了 Volta(sm_70) 且要求驅動 r580+；DGX-2 是 V100 + 驅動 12.2
-if not cuda.startswith("12"):
-    sys.exit(f"FATAL: torch built with CUDA {cuda!r}. DGX-2 的 V100 (sm_70) 需要 "
-             "CUDA 12.x —— 13.x 已移除 Volta 支援且要求驅動 r580+。"
-             "請用 --index-url https://download.pytorch.org/whl/cu121 重建。")
-
-# 檢查 2：就算是 12.x，官方 wheel 從 cu128 起也把 sm_70 從預編 arch list 拿掉了。
+# 讀編譯期就烙進 binary 的 arch flags。
 #   不要用 torch.cuda.get_arch_list()：它在 is_available() 為 False 時回傳空 list，
-#   在沒有 GPU 的 build 環境裡問不出東西。改讀編譯期就烙進去的 arch flags。
+#   在沒有 GPU 的 build 環境裡問不出東西。
 flags = ""
 try:
     flags = torch._C._cuda_getArchFlags() or ""
 except Exception:
     pass
-if "sm_70" not in flags and "compute_70" not in flags:
+if not flags:
     flags = torch.__config__.show()
-if "sm_70" not in flags and "compute_70" not in flags:
-    sys.exit("FATAL: 這個 torch build 沒有 sm_70 kernel。V100 上會噴 "
-             "'no kernel image is available for execution on the device'。")
+print("arch flags:", flags)
 
-print("OK: CUDA 12.x + sm_70 present -> V100 可用")
+# 檢查 1：CUDA 13.x 移除了 Volta(sm_70)，且要求驅動 r580+（DGX-2 只到 12.2）。
+#   12.8/12.9 才是同時支援 sm_70 與 sm_120 的交集。
+if not cuda.startswith("12"):
+    sys.exit(f"FATAL: torch built with CUDA {cuda!r}。需要 CUDA 12.8/12.9 —— "
+             "13.x 已移除 Volta(sm_70)，DGX-2 的 V100 不能用。")
+
+# 檢查 2：★ 真正的把關 ★ 一顆 sif 要跨兩台機器，兩個 arch 都必須在 wheel 裡。
+#   「CUDA 12.8 支援 sm_70」不等於「這顆 wheel 包了 sm_70」——
+#   PyTorch 為了縮小 wheel 會自己砍舊 arch，只有這裡問得到實話。
+REQUIRED = {
+    "sm_70":  "DGX-2 Tesla V100（production）",
+    "sm_120": "開發機 RTX PRO 6000 Blackwell",
+}
+missing = {a: m for a, m in REQUIRED.items()
+           if a not in flags and a.replace("sm_", "compute_") not in flags}
+if missing:
+    detail = "；".join(f"{a}（{m}）" for a, m in sorted(missing.items()))
+    sys.exit(f"FATAL: 這個 torch build 缺少 arch：{detail}。\n"
+             f"       實際 arch flags：{flags}\n"
+             "       缺的那台機器會噴 'no kernel image is available for execution "
+             "on the device'。\n"
+             "       依序試：cu129/torch 2.8.0 → NGC 容器 → 源碼編譯\n"
+             "       （TORCH_CUDA_ARCH_LIST=\"7.0;7.5;8.0;8.6;9.0;12.0\"）。\n"
+             "       詳見 DEVELOPMENT_NOTES.md §「一顆 sif 要跨 V100 + Blackwell」。")
+
+print("OK: sm_70 + sm_120 都在 -> V100 與 Blackwell 皆可用")
 PYEOF
 
     cat /opt/build_versions.txt
@@ -394,37 +437,61 @@ print("Patch 2 (one_hot_encode IUPAC) OK")
 PYEOF
 
 %labels
-    Version 1.0.5
-    Description "Pangolin tkzeng/Pangolin + PyTorch 2.5.1 cu121 (sm_70/V100 OK) + pyvcf3 patched + bcftools + tabix/bgzip"
+    Version 1.0.6
+    Description "Pangolin tkzeng/Pangolin + PyTorch 2.7.0 cu128 (sm_70 V100 + sm_120 Blackwell) + pyvcf3 patched + bcftools + tabix/bgzip"
 EOF
 
 conda activate base
-# ⚠️ 不要加 --notest，%test 的 sm_70 守門員要在 build 階段生效
+# ⚠️ 不要加 --notest，%test 的 sm_70 + sm_120 守門員要在 build 階段生效
 apptainer build /data/pylin1991/nf-containers/pangolin_1.0.0.sif /tmp/pangolin.def
 
 # build 會自己跑 %test；要單獨再跑一次：
 apptainer test /data/pylin1991/nf-containers/pangolin_1.0.0.sif
-# 期望看到：OK: CUDA 12.x + sm_70 present -> V100 可用
+# 期望看到：OK: sm_70 + sm_120 都在 -> V100 與 Blackwell 皆可用
+#
+# 若印出 "FATAL: 這個 torch build 缺少 arch: sm_70(...)" →
+#   cu128 的 prebuilt wheel 沒包 Volta，改試 fallback（見上方表格）：
+#     --index-url https://download.pytorch.org/whl/cu129  torch==2.8.0
+#   仍失敗就得走 NGC 容器或源碼編譯。守門員的存在就是讓這件事在 build 階段
+#   一次問清楚，不要再靠「部署到某一台才發現」。
 ```
 
 #### 部署與驗證
 
+**兩台都要驗** —— 這次的教訓就是「只在一台上測會漏」：
+
 ```bash
-# 1) 傳到 DGX-2（覆蓋舊的 cu130 容器）
+# 1) 開發機（Blackwell / sm_120）—— build 完就地測
+SIF=/data/pylin1991/nf-containers/pangolin_1.0.0.sif
+apptainer exec --nv $SIF python3 -c \
+    "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# 期望：cuda True NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition
+
+# 2) 傳到 DGX-2（覆蓋舊容器）
 rsync -avz --progress \
     /data/pylin1991/nf-containers/pangolin_1.0.0.sif \
     n101569@10.11.33.75:/datalake_Intermediate/pipeline/nextflow_containers/
 
-# 2) 在 DGX-2 上實測 GPU（這次一定要帶 --nv）
+# 3) DGX-2（V100 / sm_70）
 ssh n101569@10.11.33.75
 SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_1.0.0.sif
 apptainer exec --nv $SIF python3 -c \
     "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # 期望：cuda True Tesla V100-SXM3-32GB
 
-# 3) 版本追溯
+# 4) 版本追溯
 apptainer exec $SIF cat /opt/build_versions.txt
 ```
+
+> ⚠️ `torch.cuda.is_available()` 印 True **還不夠** —— arch 不符時它照樣回 True，
+> 只是在第一次跑 kernel（`conv1d`）才噴 `no kernel image is available`。
+> 要真的確認，跑一次 forward：
+> ```bash
+> apptainer exec --nv $SIF python3 -c \
+>   "import torch; x=torch.randn(1,4,64,device='cuda'); \
+>    c=torch.nn.Conv1d(4,8,3).cuda(); print('conv OK', c(x).shape)"
+> ```
+> 這行在兩台上都要過，才算真的一顆 sif 通吃。
 
 **在容器修好之前的臨時解法**：`--use_gpu_pangolin false` 走 CPU。
 `PANGOLIN_SCORE` 的 CPU 路徑已完整處理（不加 `--nv`、不呼叫 `gpu_lock.sh`、
@@ -1042,13 +1109,21 @@ apptainer exec --nv $SIF \
     python3 -c "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 #   期望：cuda True Tesla V100-SXM3-32GB
 #
-#   ⚠️ 若噴 "driver ... too old (found version 12020)"：
-#      這是容器裡的 torch 版本問題，不是 V100 不行、也不是驅動該升。
-#      先查容器是用哪個 CUDA 編的：
+#   ⚠️ is_available()=True 還不夠！arch 不符時它照樣 True，要跑到 kernel 才爆。
+#      一定要再跑一次真的 forward：
+apptainer exec --nv $SIF python3 -c \
+    "import torch; x=torch.randn(1,4,64,device='cuda'); \
+     c=torch.nn.Conv1d(4,8,3).cuda(); print('conv OK', c(x).shape)"
+#
+#   ⚠️ 兩種錯誤都是「容器的 torch wheel 不對」，不是 V100 不行、也不是驅動該升：
+#      - "driver ... too old (found version 12020)"        → wheel 是 CUDA 13.x
+#      - "no kernel image is available ... on the device"  → wheel 缺這張卡的 arch
+#      先查容器的 CUDA 版本與 arch flags：
 apptainer exec $SIF python3 -c \
-    "import torch; print(torch.__version__, torch.version.cuda)"
-#      印出 13.x（或 12.8+ 且無 sm_70）→ 必須重建容器，見「容器建立 →
-#      pangolin_1.0.0.sif → V100 一定要 pin CUDA 12.x」。
+    "import torch; print(torch.__version__, torch.version.cuda); \
+     print(torch._C._cuda_getArchFlags())"
+#      arch flags 缺 sm_70（V100）或 sm_120（開發機 Blackwell）→ 必須重建容器，
+#      見「容器建立 → pangolin_1.0.0.sif → 一顆 sif 要跨 V100 + Blackwell」。
 #      重建期間可先用 --use_gpu_pangolin false 走 CPU（結果相同，只影響速度）。
 
 # 3) GPU lock 腳本存在（與二級共用）
