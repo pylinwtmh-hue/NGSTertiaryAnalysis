@@ -194,6 +194,247 @@ apptainer build /data/pylin1991/nf-containers/vep_115.sif /tmp/vep_115.def
 apptainer test /data/pylin1991/nf-containers/vep_115.sif
 ```
 
+### pangolin_1.0.0.sif（Version 1.0.5）
+
+**已知踩雷：**
+
+| 問題 | 原因 | 解決方式 |
+|------|------|---------|
+| `wget: not found` | 官方 image 沒有 wget | 改用 `curl -sL url -o file` |
+| `git: not found` | 官方 image 沒有 git | `apt-get install git` |
+| `_Info.__new__() missing type_code` | pyvcf3 的 `_Info` 比原版 pyvcf 多一個必填參數，Pangolin 尚未更新 | `%post` patch 1：補上 `None` |
+| `map(int, ...)` crash on `Y`/`R`/`W` | hg38 部分座標含 IUPAC ambiguity code，`one_hot_encode` 只處理 A/C/G/T/N | `%post` patch 2：`re.sub(r'[^01234]', '0', seq)`（同 N，全零 encoding）|
+| Pangolin segfault（CSQ 過長） | WGS 的 CSQ 可達 270 KB，Pangolin parse 時爆掉 | module 內先 `bcftools annotate -x INFO/CSQ` |
+| Pangolin segfault（alt/random contig） | gencode DB 沒有 `chr*_alt` / `chr*_random` / `chrUn_*` 的 gene model | module 內 `grep -E '^#\|^chr([0-9]+\|[XYM])\t'` 只留標準染色體 |
+| **`RuntimeError: The NVIDIA driver on your system is too old (found version 12020)`** | **`pip install torch` 沒有 pin，PyPI 預設 wheel 已變成 cu130（CUDA 13.0）** | **pin 到 cu121，見下方 §「V100 一定要 pin CUDA 12.x」** |
+
+#### ⚠️ V100 一定要 pin CUDA 12.x（2026-08 修正）
+
+DGX-2 上 `apptainer exec --nv ... torch.cuda.is_available()` 噴：
+
+```
+RuntimeError: The NVIDIA driver on your system is too old (found version 12020)
+```
+
+`12020` 是**驅動**能提供的 CUDA 版本＝ 12.2（driver 535.x 系列），不是卡的能力。
+真正的原因是容器裡的 torch 是 **CUDA 13.0** 版（舊 def 的 `%labels` 就寫著 `PyTorch cu130`）：
+
+1. **CUDA 13.x 要求驅動 r580+**。CUDA 的 minor version compatibility 只在同一個 major
+   版本內成立（任何 12.x 程式都能跑在 12.0+ 驅動上），跨 major 就是硬噴，不會降級相容。
+2. **更關鍵：CUDA 13.0 在工具鏈層面移除了 Volta（sm_70）支援**，V100 就是 sm_70。
+   所以「請 MIS 升驅動」是**錯的方向** —— 升上去之後錯誤只會從
+   `driver too old` 變成 `no kernel image is available for execution on the device`，
+   而且 V100 從此永久不能用。正解是把 torch 降到 **CUDA 12.x**。
+
+**根因不是「某次改動被改掉」，而是依賴漂移。** 舊 def 寫的是
+
+```bash
+pip install --no-cache-dir torch torchvision     # ← 沒有 pin
+```
+
+這行一直都沒有 pin，只是 PyPI 的 `torch` 預設 wheel 原本是 CUDA 12.x 版；
+等 PyTorch 把預設換成 cu130 之後，**同一份 def 檔重建就會產出不同的容器**。
+`%labels` 的 `cu130` 是當時觀察到的結果，正好留下了漂移的證據。
+
+**為什麼 build 的時候沒被抓到**：舊 `%test` 只是
+
+```bash
+python3 -c "import torch; print('CUDA:', torch.cuda.is_available())"
+```
+
+`apptainer build` / `apptainer test` 都**不帶 `--nv`**，所以這行永遠印 `False` 而且
+**exit code 是 0**，測試照過。新版 `%test` 改成不需要 GPU 也能驗的硬檢查
+（`torch.version.cuda` 必須是 12.x、arch flags 必須含 `sm_70`），失敗直接讓 build 爆掉。
+
+> **SIF 檔名不要改。** `nextflow_tertiary.config` 寫死 `${params.sif_dir}/pangolin_1.0.0.sif`，
+> 版號只放在 `%labels` 裡。改檔名會讓 `PANGOLIN_SCORE` 找不到容器。
+
+#### 重建指令
+
+```bash
+cat > /tmp/pangolin.def << 'EOF'
+Bootstrap: docker
+From: python:3.11-slim
+
+%post
+    apt-get update -qq && apt-get install -y --no-install-recommends \
+        gcc g++ make git \
+        zlib1g-dev libbz2-dev liblzma-dev \
+        libcurl4-openssl-dev libssl-dev \
+        procps bcftools tabix \
+        && rm -rf /var/lib/apt/lists/*
+
+    # ── ⚠️ torch 必須 pin 在 CUDA 12.x，且 wheel 要含 sm_70（V100）─────────
+    #   為什麼不能用預設的 `pip install torch`：
+    #     PyPI 的預設 wheel 現在是 cu130（CUDA 13.0）→ 需要驅動 r580+，
+    #     而且 CUDA 13.0 已移除 Volta(sm_70) 支援 → DGX-2 的 V100 永遠跑不起來。
+    #   為什麼選 cu121：
+    #     DGX-2 驅動只到 CUDA 12.2，cu121 <= 12.2 → 完全不依賴 minor-version 相容；
+    #     且 cu121 的官方 wheel 一定含 sm_70 kernel。
+    #   為什麼選 2.5.1：
+    #     cu121 wheel 提供到 torch 2.5.x（2.6 起改成 cu118/cu124/cu126）→
+    #     在「一定有 sm_70」的前提下取最新。torchvision 0.20.1 配 torch 2.5.1。
+    #   若哪天 cu121 索引下架，退而用 cu124（也含 sm_70，靠 minor-version 相容跑在 12.2 驅動上）：
+    #     --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0 torchvision==0.21.0
+    pip install --no-cache-dir \
+        --index-url https://download.pytorch.org/whl/cu121 \
+        torch==2.5.1 torchvision==0.20.1
+
+    pip install --no-cache-dir gffutils biopython pandas pyfastx pyvcf3
+    pip install --no-cache-dir git+https://github.com/tkzeng/Pangolin.git
+
+    # ── 記錄實際解析到的版本（unpinned 依賴漂移就是這個容器踩過的坑）──────
+    #   寫進 image，之後 `apptainer exec $SIF cat /opt/build_versions.txt` 就能查，
+    #   評鑑要求的「版本可追溯」也用得上。
+    pip freeze \
+        | grep -iE "^(torch|torchvision|pangolin|pyvcf3|gffutils|pyfastx|biopython|pandas)" \
+        > /opt/build_versions.txt
+    echo "--- build_versions.txt ---"; cat /opt/build_versions.txt
+
+    # ── Patch pangolin.py：補上 pyvcf3 新增的 type_code 參數 ──────
+    # pyvcf3 的 _Info.__new__() 比原版 pyvcf 多一個必填參數 type_code，
+    # Pangolin 尚未更新，補上 None（等同預設行為）即可正常運作。
+    # Patch 2：one_hot_encode 加入 IUPAC code 處理，
+    #   reference genome 部分座標含 Y/R/W 等 IUPAC code，
+    #   原本只處理 A/C/G/T/N，其餘字元讓 map(int,...) crash，
+    #   改用 re.sub 把所有非數字字元換成 '0'（同 N，全零 encoding）
+    # 兩個 patch 都在 pattern 找不到時 raise SystemExit(1) → 上游改版會讓 build
+    #   立刻失敗，而不是產出一個會在跑 case 時才爆的容器。
+    python3 - <<'PYEOF'
+path = "/usr/local/lib/python3.11/site-packages/pangolin/pangolin.py"
+with open(path, "r") as f:
+    content = f.read()
+
+# Patch 1：_Info type_code
+old1 = "\"Format: gene|pos:score_change|pos:score_change|warnings,...\",\'.\',\'.\')"
+new1 = "\"Format: gene|pos:score_change|pos:score_change|warnings,...\",\'.\',\'.\', None)"
+if old1 in content:
+    content = content.replace(old1, new1)
+    print("Patch 1 (_Info type_code) OK")
+else:
+    print("ERROR: Patch 1 pattern not found")
+    for i, l in enumerate(content.splitlines()[238:252], 239):
+        print(f"{i}: {l}")
+    raise SystemExit(1)
+
+# Patch 2：one_hot_encode IUPAC ambiguity code
+old2 = "    seq = seq.replace('G', '3').replace('T', '4').replace('N', '0')"
+new2 = ("    seq = seq.replace('G', '3').replace('T', '4').replace('N', '0')\n"
+        "    import re; seq = re.sub(r'[^01234]', '0', seq)  # IUPAC ambiguity -> N")
+if old2 in content:
+    content = content.replace(old2, new2)
+    print("Patch 2 (one_hot_encode IUPAC) OK")
+else:
+    print("ERROR: Patch 2 pattern not found")
+    for i, l in enumerate(content.splitlines()[15:30], 16):
+        print(f"{i}: {l}")
+    raise SystemExit(1)
+
+with open(path, "w") as f:
+    f.write(content)
+print("All patches written OK")
+PYEOF
+
+%test
+    pangolin --help 2>&1 | head -3
+
+    # ── ★ 這個容器最重要的守門員：確認 torch 是「V100 能用」的 build ★ ──────
+    #   關鍵設計：這段**不需要 GPU** 也能驗。apptainer build / test 都不帶 --nv，
+    #   所以舊版那行 `print(torch.cuda.is_available())` 永遠印 False 且 exit 0，
+    #   測試永遠會過 —— cu130 就是這樣混過 build、直到部署上 DGX-2 才爆。
+    #   改成 sys.exit(訊息) 後，build 階段就會直接失敗。
+    #   （注意：`apptainer build --notest` 會跳過這段，重建時不要加。）
+    python3 - <<'PYEOF'
+import sys, torch
+
+cuda = torch.version.cuda or ""
+print("torch:", torch.__version__, "| built with CUDA:", cuda)
+
+# 檢查 1：CUDA 13.x 移除了 Volta(sm_70) 且要求驅動 r580+；DGX-2 是 V100 + 驅動 12.2
+if not cuda.startswith("12"):
+    sys.exit(f"FATAL: torch built with CUDA {cuda!r}. DGX-2 的 V100 (sm_70) 需要 "
+             "CUDA 12.x —— 13.x 已移除 Volta 支援且要求驅動 r580+。"
+             "請用 --index-url https://download.pytorch.org/whl/cu121 重建。")
+
+# 檢查 2：就算是 12.x，官方 wheel 從 cu128 起也把 sm_70 從預編 arch list 拿掉了。
+#   不要用 torch.cuda.get_arch_list()：它在 is_available() 為 False 時回傳空 list，
+#   在沒有 GPU 的 build 環境裡問不出東西。改讀編譯期就烙進去的 arch flags。
+flags = ""
+try:
+    flags = torch._C._cuda_getArchFlags() or ""
+except Exception:
+    pass
+if "sm_70" not in flags and "compute_70" not in flags:
+    flags = torch.__config__.show()
+if "sm_70" not in flags and "compute_70" not in flags:
+    sys.exit("FATAL: 這個 torch build 沒有 sm_70 kernel。V100 上會噴 "
+             "'no kernel image is available for execution on the device'。")
+
+print("OK: CUDA 12.x + sm_70 present -> V100 可用")
+PYEOF
+
+    cat /opt/build_versions.txt
+    python3 -c "import gffutils; print('gffutils OK')"
+    bcftools --version | head -1
+    bgzip --version | head -1
+    tabix --version | head -1
+    ps --version
+    python3 - <<'PYEOF'
+import vcf, re
+# Patch 1：_Info type_code
+info = vcf.parser._Info('TEST', '.', 'String', 'test', '.', '.', None)
+print("Patch 1 (_Info type_code) OK")
+# Patch 2：one_hot_encode IUPAC
+import sys
+sys.path.insert(0, '/usr/local/lib/python3.11/site-packages')
+from pangolin.pangolin import one_hot_encode
+import numpy as np
+result = one_hot_encode('ACGTYN', '+')  # Y 是 IUPAC，不應 crash
+print("Patch 2 (one_hot_encode IUPAC) OK")
+PYEOF
+
+%labels
+    Version 1.0.5
+    Description "Pangolin tkzeng/Pangolin + PyTorch 2.5.1 cu121 (sm_70/V100 OK) + pyvcf3 patched + bcftools + tabix/bgzip"
+EOF
+
+conda activate base
+# ⚠️ 不要加 --notest，%test 的 sm_70 守門員要在 build 階段生效
+apptainer build /data/pylin1991/nf-containers/pangolin_1.0.0.sif /tmp/pangolin.def
+
+# build 會自己跑 %test；要單獨再跑一次：
+apptainer test /data/pylin1991/nf-containers/pangolin_1.0.0.sif
+# 期望看到：OK: CUDA 12.x + sm_70 present -> V100 可用
+```
+
+#### 部署與驗證
+
+```bash
+# 1) 傳到 DGX-2（覆蓋舊的 cu130 容器）
+rsync -avz --progress \
+    /data/pylin1991/nf-containers/pangolin_1.0.0.sif \
+    n101569@10.11.33.75:/datalake_Intermediate/pipeline/nextflow_containers/
+
+# 2) 在 DGX-2 上實測 GPU（這次一定要帶 --nv）
+ssh n101569@10.11.33.75
+SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_1.0.0.sif
+apptainer exec --nv $SIF python3 -c \
+    "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# 期望：cuda True Tesla V100-SXM3-32GB
+
+# 3) 版本追溯
+apptainer exec $SIF cat /opt/build_versions.txt
+```
+
+**在容器修好之前的臨時解法**：`--use_gpu_pangolin false` 走 CPU。
+`PANGOLIN_SCORE` 的 CPU 路徑已完整處理（不加 `--nv`、不呼叫 `gpu_lock.sh`、
+`CUDA_VISIBLE_DEVICES=""`），**結果與 GPU 完全相同**，只是慢；且 Pangolin 只跑
+`INFO` 含 `splice` 的候選變異（非全部變異），實務上可能可以接受。
+若要長期走 CPU，記得補 `dgx` profile 的 `withLabel: process_gpu { cpus = N }`
+並把 `maxForks` 從 6 調小 —— 否則 6 個 CPU inference 會互搶核心。
+
+---
+
 ### annotsv_3.5.10.sif
 
 ```bash
@@ -795,10 +1036,20 @@ nextflow -c /datalake_Intermediate/pipeline/tertiary_code/nextflow_tertiary.conf
 nextflow -c .../nextflow_tertiary.config run .../main_tertiary.nf -profile dgx \
     --samplesheet /dev/null --out_dir /tmp/x -preview
 
-# 2) Pangolin 能否吃 V100（compute 7.0）
-apptainer exec --nv /datalake_Intermediate/pipeline/nextflow_containers/pangolin_1.0.0.sif \
+# 2) Pangolin 能否吃 V100（compute 7.0 / sm_70）
+SIF=/datalake_Intermediate/pipeline/nextflow_containers/pangolin_1.0.0.sif
+apptainer exec --nv $SIF \
     python3 -c "import torch; print('cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
-#   印不出 cuda True → 改用 --use_gpu_pangolin false 走 CPU（只影響速度）
+#   期望：cuda True Tesla V100-SXM3-32GB
+#
+#   ⚠️ 若噴 "driver ... too old (found version 12020)"：
+#      這是容器裡的 torch 版本問題，不是 V100 不行、也不是驅動該升。
+#      先查容器是用哪個 CUDA 編的：
+apptainer exec $SIF python3 -c \
+    "import torch; print(torch.__version__, torch.version.cuda)"
+#      印出 13.x（或 12.8+ 且無 sm_70）→ 必須重建容器，見「容器建立 →
+#      pangolin_1.0.0.sif → V100 一定要 pin CUDA 12.x」。
+#      重建期間可先用 --use_gpu_pangolin false 走 CPU（結果相同，只影響速度）。
 
 # 3) GPU lock 腳本存在（與二級共用）
 ls -l /datalake_Intermediate/pipeline/pipeline_code/gpu_{lock,unlock}.sh
