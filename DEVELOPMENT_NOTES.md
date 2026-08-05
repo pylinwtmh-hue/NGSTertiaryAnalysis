@@ -1199,6 +1199,16 @@ NA12878_WGS,nckuh,/scratch/pylin1991/Pipeline_test/NA12878_WGS/NA12878_WGS/NA128
 VAL-10,dragen,/scratch/pylin1991/Pipeline_test/DRAGEN/VAL-10,WGS,HP:0001250
 ```
 
+```csv
+sample_id,pipeline_type,input_dir,seq_type,hpo
+26T00001,dragen,/data/WGS/26T00001,WES,
+26T00089,dragen,/data/WGS/26T00089,WGS,
+26T00076,dragen,/data/WGS/26T00076,WGS,
+```
+
+
+    
+
 ### 執行指令
 
 ```bash
