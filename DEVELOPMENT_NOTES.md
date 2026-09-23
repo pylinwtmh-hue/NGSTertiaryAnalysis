@@ -1796,3 +1796,63 @@ ERepo = 各 VCEP 專家小組的變異判讀，含**實際套用的 ACMG criteri
 非 missense（synonymous/intron/UTR/indel）一律 `.`，符合 dbNSFP 只收 nsSNV 的設計。
 未命中的 missense 多為 PRAMEF 家族等旁系同源區，屬各工具自身覆蓋限制。
 ClinGen 對照 77 筆（AGREE 71 / DIFFER_TIER 4 / DIFFER 2）；PVS1 分級 40 `PVS1` + 5 `PVS1_Strong`。
+
+### ⚠️ SUZ12 幽靈變異：兩邊都沒 call 被標 HC、AD 缺值補 0（2026-09）
+
+**怎麼發現的**：與 DRAGEN 比對 SUZ12 的 `c.2168_2170delinsTT`（p.Glu723ValfsTer21）。
+DRAGEN 只有正確的 delinsTT；NCKUH 多出一個 DRAGEN 沒有的 `c.2170del`
+（p.Thr724GlnfsTer20，`chr17:31998950 GA>G`，AD 10,14、VAF 0.583），而正確的 delinsTT
+反而顯示 `AD 10,0 / VAF 0`。**兩列各自都會誤導判讀**：錯的看起來可信、對的看起來像 artifact。
+
+**不是 phasing / combine 的問題**：combine_phased 在 HC 端完全正確（`GAAA>GTT 0|1`、
+`COMBINED=2`、`PS=31998950`）。問題是下游三處各自的小錯疊加：
+
+| # | 位置 | 錯在哪 |
+|---|------|--------|
+| 1 | 二級 `BCFTOOLS_ENSEMBLE` | DV 把 delinsTT 三個片段全判 RefCall（`./.`），但 RefCall 仍進了 `merge --merge all` → 與 HC 的 `GAAA>GTT` 併成 `GAAA GAA,GTT`，FILTER 變 DV 的 `RefCall` |
+| 2 | 三級 `determine_callers()` | `if DV+HC / elif DV / else "HC"` —— **兩邊都沒 call 也回傳 HC**。三級 norm 拆開後 950 `GA>G`（DV `./.` + HC `0\|0`）、952/953 `A>T`（兩邊 `./.`）**四筆全被標 HC** 進 ACMG 表 |
+| 3 | 三級 `get_ad()` | `max(int(v), 0)` 把缺值補 0 —— DV 從未評估 GTT，AD `10,.` 被寫成 `10,0` |
+
+**修正**：
+
+- 二級：DV arm 在 `norm -m -any` **之後**加 `bcftools view -i 'GT="alt"'`（先 norm 才能讓
+  `0/2` 拆成 `0/0` 丟掉 + `0/1` 保留）。**不用 pipe** —— shell 是 `bash -ue` 沒有
+  `pipefail`，norm 中途失敗時 view 可能以 0 結束並寫出截斷檔。RefCall 仍保留在已發布的
+  `<id>.deepvariant.vcf.gz`（稽核用；CNVkit 讀的也是那份）。
+- 三級：`determine_callers()` 補 `elif hc_called` / `else "NONE"`；`FILTER_FOR_ANNOTATION`
+  的 `-i` 條件本來就不收 NONE，不需改。`get_ad()` 個別缺值保留 `.`。stderr 統計分出 NONE。
+- `scripts/test_add_callers_tag.py`（8 案例）：驗證過對舊版程式碼會失敗；
+  `test_none_excluded_by_real_filter` **直接讀 `prepare_vcf.nf` 的 `-i` 條件**，
+  詞彙或過濾條件改了會立刻失敗。
+
+**重現方式**（沒有 GPU / 容器也能做）：`pip install cyvcf2 pysam` → pysam 內建 bcftools
+（1.24）→ 手寫與實際 ensemble 逐欄相同的 DV / HC 輸入 → 依序跑 merge、三級 norm、
+新舊兩版 `add_callers_tag.py`、`FILTER_FOR_ANNOTATION`。merge 結果與實際輸出**逐欄一致**。
+
+**踩到的語義細節（都已實測）**：
+
+- `GT="alt"`：保留 `0/1 0|1 1/1 1|1 1/0`；丟掉 `./. 0/0 0|0 ./0` **以及半缺失 `./1 1/.`**
+  —— 與 `is_called()`（任一 allele 缺失即不算 call）一致。
+- `bcftools merge` 預設 `both` **不會**把 SUZ12 這兩筆併在一起（`GA>G` 與 `GAAA>GTT` 分兩筆），
+  因為 delins 不是單純 indel；**只有 `--merge all` 會併**。本 pipeline 用 `all`。
+
+**為什麼舊的程式碼註解與評鑑大補帖都沒抓到**：`prepare_vcf.nf` 的註解描述了
+「DV=0/0, HC=./. 會被標成 HC」，卻下了錯的結論（「實際上這種 case 不會有 CALLERS tag」）；
+評鑑大補帖舊版照抄了這個結論，還在 `determine_callers` 旁寫了「看起來像 bug，但實務上不會
+發生」的推論（錯在把「有紀錄」當成「有 ALT call」——DV 的 RefCall 就是一筆紀錄）。
+**教訓：「我推論這個分支到不了」必須寫成測試，不能只寫成註解。**
+
+**連帶影響 —— 驗證時要預期**：
+
+- ACMG 表會**少掉所有 ZYGOSITY 為 `ref` / `unknown` 的列**（都是非變異）。
+- 舊 stderr 的「HC only」包含了 NONE，`prepare_vcf.nf` 舊註解引用的
+  「NA12878_WES HC-only 23.9%（8,897 / 37,198）」**被灌水了，需重新量測**。
+- 二級 `ensemble.fixed.vcf.gz` 不再含 DV RefCall，**紀錄數會下降**。
+- `add_dragen_tag.py` 的 `get_ad()` 有同樣的 `max(int(v), 0)`，但 DRAGEN 路徑是單一 caller、
+  沒有 merge，AD 不會出現部分缺值 → **目前無影響，未修改**（DRAGEN 結果已驗證正確）。
+
+**GUI 要確認的一件事**：修正後 SUZ12 delinsTT 的 `DP_DV / AD_DV / VAF_DV` 全是 `.`（DV 在該位點
+沒有紀錄），HC 欄位是 `DP 5 / AD 3,2`。GUI 若「DV 缺值才用 HC」會自動顯示正確；若「永遠顯示 DV
+且把 `.` 當 0」就得改。修正前 TSV 的 `VAF_DV` 是 `.`（已重現確認），GUI 卻顯示 0 ——
+代表 GUI 要嘛把缺值轉成 0、要嘛從 AD `10,0` 反算 VAF。兩種都要檢查：F2 之後 AD 會是 `10,.`，
+若 GUI 從 AD 反算，要確認它能處理 `.`。

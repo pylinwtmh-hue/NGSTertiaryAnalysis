@@ -20,7 +20,7 @@
 
 | 步驟 | 功能 | 狀態 |
 |------|------|------|
-| PREPARE_VCF | NCKUH ensemble VCF 前處理（CALLERS tag、PASS 過濾）| ✅ 測試通過 |
+| PREPARE_VCF | NCKUH ensemble VCF 前處理（CALLERS tag、依 CALLERS 過濾，不看 FILTER）| ✅ 測試通過 |
 | PREPARE_VCF_DRAGEN | DRAGEN VCF 前處理（CALLERS=DRAGEN、chrM 分流、自動建 tabix index）| ✅ 測試通過 |
 | VEP_ANNOTATE | VEP 115 annotation（dbNSFP、LOFTEE、ClinVar、gnomAD、1000G）| ✅ 測試通過 |
 | PANGOLIN_SCORE | Splice variant GPU inference | ✅ 測試通過 |
@@ -693,6 +693,7 @@ echo ""
 echo "========================================="
 echo "Step 4：CALLERS 欄位確認（第 15 欄）"
 echo "（NCKUH 應為 DV+HC/DV/HC；DRAGEN 應為 DRAGEN）"
+echo "（若出現 NONE，代表 FILTER_FOR_ANNOTATION 沒有生效 —— NONE 不該進到 TSV）"
 echo "========================================="
 awk -F'\t' 'NR>1 {print $15}' $TSV | sort | uniq -c | sort -rn | head -5
 
