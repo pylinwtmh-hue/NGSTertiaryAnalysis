@@ -985,7 +985,7 @@ awk -F'\t' -v cols=REVEL_SCORE,CADD_PHRED,PKNN_LLR,MUTPRED2_SCORE,VEST4_SCORE,AL
   END   { printf "missense SNV = %d\n", tot
           for (i=1;i<=n;i++) printf "  %-20s %6d  %5.1f%%\n", want[i], k[want[i]], 100*k[want[i]]/tot }
 ' $TSV
-#   ⚠️ 欄名以輸出 TSV 的 header 為準（見附錄 A 的 81 欄總表）；
+#   ⚠️ 欄名以輸出 TSV 的 header 為準（見附錄 A 的欄位總表，2026-09 起 82 欄）；
 #      對不到會印 0%，那是欄名寫錯不是資料庫壞掉 —— 先用
 #      `head -1 $TSV | tr '\t' '\n' | grep -n .` 對一下。
 ```
@@ -1938,5 +1938,17 @@ ACMG 計分，只影響顯示／GUI 篩選。
   成分若是 indel 就帶著前導鹼基，而合成結果沒有最小化 → DV、HC 的 POS 不同。現在輸出前先 `trim_alleles()`。
 - 對三級 DRAGEN 路徑（`COMBINE_DRAGEN`）也生效：合成紀錄一開始就是最小表示，後面的 norm 近乎 no-op。
 
-**重跑後預期**：「拆兩列」820 → 接近 0；NONE 的 chrX 部分消失、只剩 chrY；ACMG 表多出的 chrX 列都帶
-`HAPLOID_HET`。記得把 `parse_vep_csq.py`、`combine_phased.py` 同步到 local 的 `scripts_dir`。
+**VAL55 重跑結果（兩項都生效）**：
+
+| 檢查 | 修正前 | 修正後 |
+|------|--------|--------|
+| 同一變異拆成 DV 一列 + HC 一列 | 820 | **2**（重複序列裡的 indel，DV 的寫法沒有左對齊，例 `chr8:113112468` HC `CACACGT>C` vs DV `113112470 CACGTAC>C`） |
+| 三級 norm 的 realigned | 39,792 | **5,735**（合成紀錄已是最小表示，不用再修剪） |
+| NONE | 8,656（chrX 2,607 + chrY 6,049） | 10,159，**全在 chrY**（chrY 的 het 改成 missing，原本被截成 ALT 的那些也不再報告） |
+| 帶 `HAPLOID_HET` 的紀錄 | — | ensemble 4,326 筆、ACMG 表 5,735 列（DV 1,798 / HC 2,926 / DV,HC 1,011），**全在 chrX** |
+| haploid_het stderr | — | `chrX_het_to_alt_DV=2243 chrX_het_to_alt_HC=2699 chrY_het_to_missing_DV=2395 chrY_het_to_missing_HC=10066` |
+| DV+HC / DV only / HC only | 89.9% / 2.6% / 7.4% | 89.9% / 2.6% / **7.3%** |
+| SUZ12 | delinsTT、DV+HC | 不變（`31998951 AAA>TT`，AD_DV 10,14、AD_HC 10,15） |
+
+剩下 2 個拆兩列的若要消除，要在二級 ensemble merge 前的 `norm` 加 `-f 參考序列`（左對齊），目前未做。
+粒線體（chrM）不動：ensemble 裡 chrM 的 het 仍會被 `+fixploidy` 截斷，實驗室以 `04_mito` 報告為準（2026-09 決定）。
