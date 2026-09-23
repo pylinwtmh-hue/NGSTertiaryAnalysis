@@ -4,10 +4,13 @@
 Unit tests for parse_vep_csq.py helpers — dependency-free (stdlib only).
 Run:  python3 scripts/test_parse_vep_csq.py
 
-Currently pins strand_bias_flag() (the STRAND_BIAS review-warning column):
+Pins strand_bias_flag() (the STRAND_BIAS review-warning column):
 germline flags strand bias for manual review, never hard-filters.
 Thresholds follow GATK convention (SNV FS>60/SOR>3.0; indel FS>200/SOR>10.0).
 DeepVariant-only sites lack FS/SOR -> "." (manual review).
+
+Also pins infer_zygosity(): ZYGOSITY comes from the GT of the caller that actually
+called an ALT (same rule as CALLERS), DV first when both did.
 """
 import os
 import sys
@@ -53,9 +56,32 @@ def test_column_registered():
     print("PASS test_column_registered -> STRAND_BIAS in OUTPUT_COLUMNS")
 
 
+def test_zygosity_uses_the_caller_that_called():
+    # Regression: DV 0/0 used to win over HC's real call -> ZYGOSITY "ref"
+    # (VAL55: 15,422 rows; DV and HC called different alleles at one POS).
+    _eq("DV 0/0 + HC 1/0 -> het (was ref)", P.infer_zygosity("0/0", "1/0", "chr1"), "het")
+    _eq("DV 0|0 + HC 1/1 -> hom (was ref)", P.infer_zygosity("0|0", "1/1", "chr1"), "hom")
+    _eq("male chrX DV 0 + HC 1 -> hemizygous (was ref)",
+        P.infer_zygosity("0", "1", "chrX"), "hemizygous")
+    _eq("half-missing DV ./1 + HC 1/1 -> hom (HC is the caller that called)",
+        P.infer_zygosity("./1", "1/1", "chr2"), "hom")
+
+
+def test_zygosity_unchanged_cases():
+    _eq("both called: DV wins", P.infer_zygosity("1/1", "0/1", "chr1"), "hom")
+    _eq("DV missing -> HC", P.infer_zygosity("./.", "0|1", "chr17"), "het")
+    _eq("DV only", P.infer_zygosity("0/1", "./.", "chr1"), "het")
+    _eq("DRAGEN (gt_hc '.')", P.infer_zygosity("0/1", ".", "chr1"), "het")
+    _eq("DRAGEN male chrX", P.infer_zygosity("1", ".", "chrX"), "hemizygous")
+    _eq("neither called, DV 0/0 -> ref (fallback)", P.infer_zygosity("0/0", "./.", "chr1"), "ref")
+    _eq("neither called, all missing -> unknown", P.infer_zygosity("./.", "./.", "chr1"), "unknown")
+
+
 if __name__ == "__main__":
     test_snv_thresholds()
     test_indel_thresholds_more_lenient()
     test_no_or_partial_data()
     test_column_registered()
+    test_zygosity_uses_the_caller_that_called()
+    test_zygosity_unchanged_cases()
     print("\nALL TESTS PASSED")

@@ -334,8 +334,8 @@ nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
 | CALLERS | `DV+HC` / `DV` / `HC`（NCKUH）或 `DRAGEN` |
 | DP_DV, AD_DV, VAF_DV | DeepVariant（DRAGEN 樣本為 DRAGEN）read depth、allelic depth、VAF |
 | DP_HC, AD_HC | HaplotypeCaller read depth、allelic depth（DRAGEN 無 HC，此二欄為空）|
-| ZYGOSITY | het / hom / hemizygous / unknown |
-| GT_DV, GT_HC | Genotype |
+| ZYGOSITY | het / hom / hemizygous / unknown（由「真的 call 到 ALT」的那個 caller 的 GT 推導，與 CALLERS 一致；兩邊都有 call 時用 DV）|
+| GT_DV, GT_HC | Genotype（例：`0/1` het、`1/1` hom、`1` 單套 hemizygous、`0/0` 沒有這個變異、`./.` 沒判定；`\|` 表示已 phase）|
 
 #### Strand bias（欄 24）
 | 欄位 | 說明 |

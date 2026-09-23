@@ -148,8 +148,32 @@ def clnrevstat_to_stars(revstat: str) -> int:
 # Zygosity 推導
 # ──────────────────────────────────────────────────────────────
  
+def _gt_called(gt: str) -> bool:
+    """GT 是否「真的 call 到 ALT」：沒有缺失 allele，且至少一個非 0 allele。
+    與 add_callers_tag.is_called() 同一定義（CALLERS 就是依它判斷），
+    所以 ZYGOSITY 會取 CALLERS 裡那個 caller 的 GT。"""
+    if gt in (".", "./.", ".|.", ""):
+        return False
+    alleles = gt.replace("|", "/").split("/")
+    if any(a == "." for a in alleles):
+        return False
+    return any(a != "0" for a in alleles)
+
+
 def infer_zygosity(gt_dv: str, gt_hc: str, chrom: str) -> str:
-    gt = gt_dv if gt_dv not in (".", "./.", ".|.") else gt_hc
+    # 用「真的 call 到 ALT」的那個 caller 的 GT（兩邊都有時 DV 優先）。
+    # ⚠️ 舊版只要 DV 的 GT 不是 missing 就用 DV 的 —— 連 0/0 也用。DV 與 HC 在同一 POS
+    #   call 到不同 allele 時，二級 --merge all 把兩者併成多等位，三級 norm 拆開後，
+    #   HC 那個 allele 的 DV 欄是 0/0 → HC 真的 call 到的變異被標成 "ref"
+    #   （VAL55：15,422 列，如 chr1:83829、chr1:602156；男性 chrX 的 DV 0 + HC 1 同理）。
+    #   兩邊都沒 call 到時沿用舊邏輯（CALLERS=NONE 已在 FILTER_FOR_ANNOTATION 擋掉，正常不會走到）。
+    #   DRAGEN：gt_hc 恆為 "."，結果與舊版相同。
+    if _gt_called(gt_dv):
+        gt = gt_dv
+    elif _gt_called(gt_hc):
+        gt = gt_hc
+    else:
+        gt = gt_dv if gt_dv not in (".", "./.", ".|.") else gt_hc
     if gt in (".", "./.", ".|.", ""):
         return "unknown"
     gt_norm = gt.replace("|", "/")

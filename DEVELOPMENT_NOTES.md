@@ -1856,3 +1856,45 @@ DRAGEN 只有正確的 delinsTT；NCKUH 多出一個 DRAGEN 沒有的 `c.2170del
 且把 `.` 當 0」就得改。修正前 TSV 的 `VAF_DV` 是 `.`（已重現確認），GUI 卻顯示 0 ——
 代表 GUI 要嘛把缺值轉成 0、要嘛從 AD `10,0` 反算 VAF。兩種都要檢查：F2 之後 AD 會是 `10,.`，
 若 GUI 從 AD 反算，要確認它能處理 `.`。
+
+### VAL55 實跑驗證 + 兩個後續修正（2026-09）
+
+**實跑結果**（VAL55 WGS、男性、`--academic_dbnsfp`；二級已含 DV `GT="alt"` 過濾）：
+
+| 檢查 | 結果 |
+|------|------|
+| CALLERS header | 含 NONE → 新版 `add_callers_tag.py` 有跑到 |
+| 兩邊都沒 ALT 的列（幽靈列） | **0** |
+| SUZ12 | 只剩 delinsTT 一列，`CALLERS=DV+HC`，DV AD 10,14 / VAF 0.58、HC AD 10,15 |
+| ADD_CALLERS_TAG stderr | 總 5,041,463：DV+HC 89.0%、DV only 3.0%、HC only 7.8%、NONE 8,771（0.2%，多為男性 chrX/Y 被 fixploidy 截成 REF 的 het） |
+| ACMG 表 | 無 NONE、無 `unknown`；dbNSFP 全部 5.3a；REVEL 有值 9,536 列 |
+
+- ⚠️ 這次二級用的 **Parabricks 版本和上次不同**，SUZ12 的 DV 由 RefCall 翻成 het（讀數完全相同，GQ 9→15）
+  → 兩個 caller 都 call 到，**這個位點已不是當初出錯的情境**；修正有效的證據是「幽靈列 = 0」＋ 重現測試。
+- HC only 7.8% 才是去掉 NONE 後的真實比例，但仍含下面第 1 點「同一變異拆兩列」的灌水。
+
+**後續修正 1 —— combine_phased 的 anchor bug（二級、三級同一支，md5 一致）**：
+ensemble 仍有 28,050 筆 `FILTER=RefCall`，全部帶 `COMBINED`。舊版 combine 讓 DV 否決的候選（`./.`）
+參與叢集，且 anchor 只挑「足跡最寬」→ 被否決的較寬候選蓋住真的 call 時，合成紀錄帶著它的
+QUAL/FILTER/AD/VAF/PL、POS 被撐寬（與 HC 對不上）→ 三級 norm 後同一變異拆成 CALLERS=DV（深度錯）
+＋ CALLERS=HC 兩列：VAL55 **23,023** 個變異（上限估計）。修正：沒有 ALT 的紀錄不進叢集。
+詳見二級 `DEVELOPMENT_NOTES.md` 第 43 條與同名踩雷記錄。三級 DRAGEN 的 `COMBINE_DRAGEN` 用同一支；
+DRAGEN VCF 幾乎沒有 no-call 紀錄，影響很小。
+
+**後續修正 2 —— ZYGOSITY 取錯 caller 的 GT（`parse_vep_csq.py` `infer_zygosity`）**：
+舊版只要 DV 的 GT 不是 missing 就用 DV 的，連 `0/0` 也用。DV 與 HC 在同一 POS call 到不同 allele
+（常見於重複序列的 indel）時，二級 `--merge all` 併成多等位，三級拆開後 HC 那個 allele 的 DV 欄是
+`0/0` → HC 真的 call 到的變異被標成 `ref`：VAL55 **15,422 列**（例 `chr1:83829`、`chr1:602156`，
+都是 CALLERS=HC、GT_DV `0/0`/`0|0`）。男性 chrX 的「DV `0` + HC `1`」同理。
+修正：用「真的 call 到 ALT」的 caller 的 GT（`_gt_called()`，與 `add_callers_tag.is_called()` 同定義；
+兩邊都有時 DV 優先），兩邊都沒有才沿用舊邏輯。DRAGEN（`gt_hc` 恆為 `.`）結果不變。
+測試：`test_parse_vep_csq.py` 新增 `test_zygosity_uses_the_caller_that_called`（舊版會失敗）與
+`test_zygosity_unchanged_cases`（舊版也通過，確認其他情況行為不變）。pipeline 內 ZYGOSITY 不參與
+ACMG 計分，只影響顯示／GUI 篩選。
+
+**重跑**：二級 `-resume`（combine 是 staged input，會從 `COMBINE_PHASED` 往後重跑）→ 三級重跑。
+記得先把 `parse_vep_csq.py`、`combine_phased.py` 同步到 local 的
+`/data/pylin1991/nf-containers/NGStertiary/1_0_0/scripts`：`parse_vep_csq.py` 是以路徑呼叫
+（不是 staged input），**只換腳本內容時 `-resume` 不會重跑那一步**。
+預期：ensemble 的 RefCall → 0；「DV 一列 + HC 一列」的數量大幅下降；ZYGOSITY=ref 只剩兩邊都
+沒 call 的極少數（正常應為 0）。
