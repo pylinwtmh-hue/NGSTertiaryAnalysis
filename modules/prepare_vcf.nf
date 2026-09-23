@@ -144,8 +144,8 @@ process FILTER_FOR_ANNOTATION {
     #   ZYGOSITY=ref/unknown 出現在 ACMG 表（實例：SUZ12 多出錯誤的 c.2170del）。
     #   這段註解舊版還寫著「這種 case 不會有 CALLERS tag」—— 那是錯的，tag 一律會寫。
     #   同一個 else 也讓 stderr 的「HC only」統計被灌水：舊註解引用的
-    #   「NA12878_WES HC-only 23.9%（8,897/37,198）」包含了這些 no-call 紀錄，
-    #   修正後需重新量測。
+    #   「NA12878_WES HC-only 23.9%（8,897/37,198）」包含了這些 no-call 紀錄。
+    #   修正後實測（VAL55 WGS，2026-09）：DV+HC 89.9%、DV only 2.6%、HC only 7.4%、NONE 0.2%。
 
     bcftools view \\
         -i 'INFO/CALLERS="DV+HC" || INFO/CALLERS="DV" || INFO/CALLERS="HC"' \\

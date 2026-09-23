@@ -1846,7 +1846,7 @@ DRAGEN 只有正確的 delinsTT；NCKUH 多出一個 DRAGEN 沒有的 `c.2170del
 
 - ACMG 表會**少掉所有 ZYGOSITY 為 `ref` / `unknown` 的列**（都是非變異）。
 - 舊 stderr 的「HC only」包含了 NONE，`prepare_vcf.nf` 舊註解引用的
-  「NA12878_WES HC-only 23.9%（8,897 / 37,198）」**被灌水了，需重新量測**。
+  「NA12878_WES HC-only 23.9%（8,897 / 37,198）」**被灌水了**（修正後 VAL55 WGS 實測 HC only 7.4%，見下節）。
 - 二級 `ensemble.fixed.vcf.gz` 不再含 DV RefCall，**紀錄數會下降**。
 - `add_dragen_tag.py` 的 `get_ad()` 有同樣的 `max(int(v), 0)`，但 DRAGEN 路徑是單一 caller、
   沒有 merge，AD 不會出現部分缺值 → **目前無影響，未修改**（DRAGEN 結果已驗證正確）。
@@ -1866,7 +1866,7 @@ DRAGEN 只有正確的 delinsTT；NCKUH 多出一個 DRAGEN 沒有的 `c.2170del
 | CALLERS header | 含 NONE → 新版 `add_callers_tag.py` 有跑到 |
 | 兩邊都沒 ALT 的列（幽靈列） | **0** |
 | SUZ12 | 只剩 delinsTT 一列，`CALLERS=DV+HC`，DV AD 10,14 / VAF 0.58、HC AD 10,15 |
-| ADD_CALLERS_TAG stderr | 總 5,041,463：DV+HC 89.0%、DV only 3.0%、HC only 7.8%、NONE 8,771（0.2%，多為男性 chrX/Y 被 fixploidy 截成 REF 的 het） |
+| ADD_CALLERS_TAG stderr | 總 5,041,463：DV+HC 89.0%、DV only 3.0%、HC only 7.8%、NONE 8,771（0.2%；推測多為男性 chrX/Y 被 fixploidy 截成 REF 的 het，待依染色體確認） |
 | ACMG 表 | 無 NONE、無 `unknown`；dbNSFP 全部 5.3a；REVEL 有值 9,536 列 |
 
 - ⚠️ 這次二級用的 **Parabricks 版本和上次不同**，SUZ12 的 DV 由 RefCall 翻成 het（讀數完全相同，GQ 9→15）
@@ -1896,5 +1896,22 @@ ACMG 計分，只影響顯示／GUI 篩選。
 記得先把 `parse_vep_csq.py`、`combine_phased.py` 同步到 local 的
 `/data/pylin1991/nf-containers/NGStertiary/1_0_0/scripts`：`parse_vep_csq.py` 是以路徑呼叫
 （不是 staged input），**只換腳本內容時 `-resume` 不會重跑那一步**。
-預期：ensemble 的 RefCall → 0；「DV 一列 + HC 一列」的數量大幅下降；ZYGOSITY=ref 只剩兩邊都
-沒 call 的極少數（正常應為 0）。
+**修正後重跑的實測結果（VAL55）**：
+
+| 檢查 | 修正前 | 修正後 |
+|------|--------|--------|
+| ensemble 的 `FILTER=RefCall` | 28,050 | **0** |
+| combine stderr `nocall_passthrough` | — | DV 865,130（≈ DV 否決的候選數）／HC 0 |
+| 同一變異拆成 DV 一列 + HC 一列 | 23,023 | **820** |
+| `ZYGOSITY=ref`（列） | 15,422 | **0**（也證明新版 `parse_vep_csq.py` 有跑到） |
+| ADD_CALLERS_TAG 總變異數 | 5,041,463 | 5,018,547 |
+| DV+HC / DV only / HC only | 89.0% / 3.0% / 7.8% | **89.9% / 2.6% / 7.4%** |
+| NONE | 8,771 | 8,656 |
+| 三級 norm 的 split / realigned | 12,280 / 68,983 | 10,318 / 39,792 |
+| SUZ12 | delinsTT 一列、DV+HC | 不變 |
+
+- realigned 少了約 2.9 萬 ≈ 那 28,050 筆被撐寬、需要三級修剪的合成紀錄不見了；split 少了約 2 千 =
+  被撐寬的 DV 紀錄剛好落在 HC 另一個 allele 的 POS 而被併成多等位的情況（如 `chr1:83829`）。
+- **VAL55 WGS 的真實 HC-only 比例是 7.4%**（舊文件的 NA12878 WES 23.9% 被 NONE 灌水）。
+- 剩下的 820 個「拆兩列」推測是兩個 caller 對同一變異的寫法不同（例如一邊經 combine 帶前導鹼基、
+  另一邊是最小表示），ensemble merge 前沒有用參考序列正規化，三級 norm 後才對齊；待看實例確認。
