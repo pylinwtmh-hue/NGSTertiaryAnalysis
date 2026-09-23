@@ -1913,4 +1913,30 @@ ACMG 計分，只影響顯示／GUI 篩選。
 - realigned 少了約 2.9 萬 ≈ 那 28,050 筆被撐寬、需要三級修剪的合成紀錄不見了；split 少了約 2 千 =
   被撐寬的 DV 紀錄剛好落在 HC 另一個 allele 的 POS 而被併成多等位的情況（如 `chr1:83829`）。
 - **VAL55 WGS 的真實 HC-only 比例是 7.4%**（舊文件的 NA12878 WES 23.9% 被 NONE 灌水）。
-- 剩下的 820 個「拆兩列」：抽查 5 例都是兩個 caller 對同一變異的寫法不同：combine 合成時叢集範圍從第一個成分的 POS 開始，成分若是 indel 就帶著它的前導鹼基，而合成結果沒有再最小化；DV、HC 拆成分的方式不同 → 前導鹼基長度不同 → POS 不同，merge 合不起來，三級 norm 修剪後才一樣。兩邊各自最小化後 5 例完全相同（例 `chr2:130206583 ACTT>AACC`〔HC〕vs `130206584 CTT>ACC`〔DV〕）。
+- 剩下的 820 個「拆兩列」（已修，見下節）：抽查 5 例都是兩個 caller 對同一變異的寫法不同：combine 合成時叢集範圍從第一個成分的 POS 開始，成分若是 indel 就帶著它的前導鹼基，而合成結果沒有再最小化；DV、HC 拆成分的方式不同 → 前導鹼基長度不同 → POS 不同，merge 合不起來，三級 norm 修剪後才一樣。兩邊各自最小化後 5 例完全相同（例 `chr2:130206583 ACTT>AACC`〔HC〕vs `130206584 CTT>ACC`〔DV〕）。
+
+### 男性 chrX 的 `HAPLOID_HET` 欄 + combine 輸出最小化（2026-09）
+
+**1. 男性單倍體區的 het（二級改、三級加欄）**
+- **問題**：二級 `+fixploidy` 把男性 chrX 非 PAR / chrY 改成單套時只留第一個 allele：`0/1`、`0|1` → `0`
+  （消失）、`1|0` → `1`（hemizygous）。開 phasing 後結果取決於 whatshap 任意定的方向。VAL55 的
+  NONE 8,656 筆**全部**是這種被截成 REF 的男性 het（chrX 2,607、chrY 6,049），另有數百筆 chrX het
+  被顯示成 hemizygous。
+- **為什麼不能一律藏掉**：男性的 het 多半是比對假象，但也可能是 47,XXY 或體細胞嵌合 —— X-linked 顯性、
+  男性通常致死的疾病（IKBKG、MECP2、CDKL5、PORCN、OFD1）男性病人常是嵌合，PCDH19 更是只有嵌合男性發病。
+- **二級**（`scripts/haploid_het.awk`，只對男性、在 `+fixploidy` 之前）：chrX 非 PAR 的 het → ALT，
+  INFO 加 `HAPLOID_HET=<DV,HC>`；chrY 的 het → `./.`（不進報告）；PAR、體染色體、chrM 不動。
+- **三級**：`parse_vep_csq.py` 新增最後一欄 `HAPLOID_HET`，只留「這一筆真的有 call」的 caller
+  （`haploid_het_callers()`；多等位拆開後 INFO 會複製到每一筆）。ZYGOSITY 仍為 hemizygous。
+  既有欄位位置不變（ACMG 表：`HAPLOID_HET` 在第 75 欄，1 起算）。DRAGEN 永遠是 `.`。
+  測試 `test_haploid_het_column`；ACMG 分類器實測可吃新欄位。
+- **GUI 要做的事**：顯示 `HAPLOID_HET` 欄；有值時提示「男性單倍體區原本是 het：可能是嵌合、XXY 或
+  比對假象，需人工複核」。
+
+**2. combine 合成結果最小化（二級、三級同一支 `combine_phased.py`）**
+- 修完 anchor bug 後，VAL55 還有 820 個變異拆成 DV 一列 + HC 一列：合成時叢集範圍從第一個成分的 POS 起算，
+  成分若是 indel 就帶著前導鹼基，而合成結果沒有最小化 → DV、HC 的 POS 不同。現在輸出前先 `trim_alleles()`。
+- 對三級 DRAGEN 路徑（`COMBINE_DRAGEN`）也生效：合成紀錄一開始就是最小表示，後面的 norm 近乎 no-op。
+
+**重跑後預期**：「拆兩列」820 → 接近 0；NONE 的 chrX 部分消失、只剩 chrY；ACMG 表多出的 chrX 列都帶
+`HAPLOID_HET`。記得把 `parse_vep_csq.py`、`combine_phased.py` 同步到 local 的 `scripts_dir`。

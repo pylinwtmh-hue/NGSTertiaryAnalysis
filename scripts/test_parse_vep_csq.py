@@ -11,6 +11,9 @@ DeepVariant-only sites lack FS/SOR -> "." (manual review).
 
 Also pins infer_zygosity(): ZYGOSITY comes from the GT of the caller that actually
 called an ALT (same rule as CALLERS), DV first when both did.
+
+And haploid_het_callers(): the HAPLOID_HET review column (male chrX non-PAR calls that
+were heterozygous before +fixploidy) keeps only callers that called this record.
 """
 import os
 import sys
@@ -77,6 +80,20 @@ def test_zygosity_unchanged_cases():
     _eq("neither called, all missing -> unknown", P.infer_zygosity("./.", "./.", "chr1"), "unknown")
 
 
+def test_haploid_het_column():
+    # INFO/HAPLOID_HET (secondary haploid_het.awk) narrowed to the callers that called this record
+    _eq("both flagged, both called", P.haploid_het_callers("DV,HC", "DV+HC"), "DV,HC")
+    _eq("both flagged, only DV called this allele (split multiallelic)",
+        P.haploid_het_callers("DV,HC", "DV"), "DV")
+    _eq("flagged caller did not call this allele", P.haploid_het_callers("HC", "DV"), ".")
+    _eq("no flag", P.haploid_het_callers(".", "DV+HC"), ".")
+    _eq("DRAGEN (no tag)", P.haploid_het_callers(".", "DRAGEN"), ".")
+    # appended last: existing column positions (index-based readers, GUI) unchanged
+    assert P.OUTPUT_COLUMNS[-1] == "HAPLOID_HET", P.OUTPUT_COLUMNS[-3:]
+    assert P.OUTPUT_COLUMNS[-2] == "PROTEIN_POSITION", P.OUTPUT_COLUMNS[-3:]
+    print("PASS test_haploid_het_column -> HAPLOID_HET is the last output column")
+
+
 if __name__ == "__main__":
     test_snv_thresholds()
     test_indel_thresholds_more_lenient()
@@ -84,4 +101,5 @@ if __name__ == "__main__":
     test_column_registered()
     test_zygosity_uses_the_caller_that_called()
     test_zygosity_unchanged_cases()
+    test_haploid_het_column()
     print("\nALL TESTS PASSED")

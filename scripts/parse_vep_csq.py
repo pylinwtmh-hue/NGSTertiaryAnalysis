@@ -160,6 +160,18 @@ def _gt_called(gt: str) -> bool:
     return any(a != "0" for a in alleles)
 
 
+def haploid_het_callers(flag: str, callers: str) -> str:
+    """二級 haploid_het.awk 的 INFO/HAPLOID_HET（男性 chrX 非 PAR 原本叫成 het 的 caller，
+    GT 已被改成 ALT 才進 +fixploidy），只留「這一筆真的有 call」的 caller（CALLERS）。
+    多等位拆開後 INFO 會複製到每一筆，但原本是 het 的可能只是其中一個 allele。
+    沒有標記、或交集為空 → "."。DRAGEN 不會有這個 tag。"""
+    if not flag or flag == ".":
+        return "."
+    called = set(callers.split("+")) if callers and callers != "." else set()
+    kept = [c for c in flag.split(",") if c in called]
+    return ",".join(kept) if kept else "."
+
+
 def infer_zygosity(gt_dv: str, gt_hc: str, chrom: str) -> str:
     # 用「真的 call 到 ALT」的那個 caller 的 GT（兩邊都有時 DV 優先）。
     # ⚠️ 舊版只要 DV 的 GT 不是 missing 就用 DV 的 —— 連 0/0 也用。DV 與 HC 在同一 POS
@@ -663,6 +675,9 @@ OUTPUT_COLUMNS = [
     # ClinGen SVI PVS1 決策樹（Abou Tayoun 2018）所需的原始欄位
     "NMD",                          # VEP NMD plugin：是否逃過 nonsense-mediated decay
     "PROTEIN_POSITION",             # Protein_position（--total_length → "123/456"），算截斷比例用
+    # 男性單倍體區（chrX 非 PAR）原本叫成 het 的 caller（二級 haploid_het.awk 標記；"." = 無）。
+    #   有值 = 需人工複核：可能是體細胞嵌合、47,XXY 或比對假象；ZYGOSITY 仍顯示 hemizygous。
+    "HAPLOID_HET",
 ]
  
  
@@ -769,6 +784,7 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                     info_dict[k] = v
  
             callers = info_dict.get("CALLERS", ".")
+            haploid_het = haploid_het_callers(info_dict.get("HAPLOID_HET", "."), callers)
 
             if input_type == "dragen":
                 # DRAGEN 單一 sample：INFO tag 名稱不同
@@ -981,6 +997,7 @@ def parse_vep_vcf(vep_vcf: str, pangolin_scores: dict,
                     "DBNSFP_VERSION":       dbnsfp_version,
                     "NMD":                  get(picked_tx, "NMD"),
                     "PROTEIN_POSITION":     get(picked_tx, "Protein_position"),
+                    "HAPLOID_HET":          haploid_het,
                 }
 
                 row_str = "\t".join(row_dict[col] for col in OUTPUT_COLUMNS) + "\n"
