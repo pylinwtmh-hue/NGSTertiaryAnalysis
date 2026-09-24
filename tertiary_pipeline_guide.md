@@ -9,6 +9,12 @@
 >   合成紀錄沿用最寬那筆的 FILTER → 可能把 PASS 變異一起丟掉，或把 DRAGEN 濾掉的 allele 拼進報告。
 > - `ZYGOSITY` 看 GT 的套數：單套才是 `hemizygous`；性染色體上的雙套 `1/1`（女性 chrX、男性 PAR）是 `hom`
 >   （舊版一律標 `hemizygous`）。欄位不變，仍是 82 欄。
+> - compound 合成（`combine_phased.py`，二級 NCKUH 與三級 DRAGEN 共用）：**phase 未知的重疊 het 不再合成**，
+>   重疊只落在錨定鹼基上才合，否則原封保留。舊版把它們當成同一條單體，VAL-10 有 **7,927 個 PASS 變異**因此
+>   從報告消失（例：缺失範圍內的 SNV），另有 1,435 處寫出沒人 call 的變異。`COMBINE_DRAGEN` 的 stderr 多了
+>   `phase_unknown=`、`overlap_conflict=`。NCKUH 在下次二級重跑時生效。
+> - DRAGEN：拆開多等位紀錄後，樣本沒帶的 allele（GT `0/0`）不再進報告。舊版會多出 `ZYGOSITY=ref` 的假列，
+>   例如 CYP21A2 `c.293-13C>G`（樣本其實是 A/A）。
 >
 > v3.7 更新（VAL55 SUZ12 驗證後的修正）：
 > - NCKUH：兩個 caller 都沒有 ALT 的紀錄標成 `CALLERS=NONE`、**不進 annotation**（舊版標成 `HC`，
@@ -919,7 +925,14 @@ awk -F'\t' 'NR==1{for(i=1;i<=NF;i++){if($i=="GENE")g=i; if($i=="NOTES")n=i}; nex
 
 代表 DV 與 HC 對同一個變異的寫法不同，在二級 merge 時沒有合在一起。v3.7 修正後已極少
 （VAL55 從 23,023 個降到 2 個，剩下的是重複序列裡 indel 的擺放位置不同）。兩列的深度各自正確，可當成
-兩個 caller 都有 call 到。
+兩個 caller 都有 call 到。v3.8 起 phase 未知的重疊變異不再合成（見下一題），NCKUH 在二級重跑後這類兩列可能略增。
+
+**Q：同一處出現兩筆互相重疊的變異（例如一個缺失，和落在它範圍內的 SNV 或另一個缺失）？**
+
+v3.8 起，phase 未知（沒有 PS，或 PS 不同）或互相矛盾的重疊變異**不再合成**，兩筆都原樣保留。兩個重疊的
+het 變異不可能同在一條染色體上（SNV 所在的鹼基已經被缺失刪掉），比較可能是各在一條（複合雜合，等同 `1/2`），
+或其中一筆是假訊號 —— 請用 IGV 看讀數判斷。舊版會把它們硬合成一筆：其中一個變異消失（VAL-10：7,927 個），
+或變成兩個 caller 都沒 call 的變異。有共同 PS 的 compound（如 SUZ12 的 delinsTT）照樣合成。
 
 **Q：男性樣本的 chrX 有 `HAPLOID_HET`，是錯誤嗎？**
 

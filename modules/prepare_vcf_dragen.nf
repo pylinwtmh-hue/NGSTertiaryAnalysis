@@ -24,7 +24,7 @@
  *   需包含：cyvcf2、bcftools、bgzip、tabix
  *
  * Script 執行順序：
- *   1. tabix：若 .tbi 不存在則自動建立
+ *   1. bcftools norm -m -any；非 chrM 只留這個樣本真的有 call 到 ALT 的紀錄（拆開後的 0/0 丟掉）
  *   2. add_dragen_tag.py：加 INFO tag，分流 SNV / Mito
  *   3. bgzip + tabix：壓縮並建立 index
  *   4. bcftools stats：輸出統計
@@ -60,7 +60,15 @@ process ADD_DRAGEN_TAG {
     #   -c w：REF 與參考不符時只警告不中斷。
     bcftools norm -m -any -f ${params.ref_fasta} -c w \\
         ${dragen_vcf} \\
-        -Oz -o ${sample_id}.norm.vcf.gz
+        -Oz -o ${sample_id}.split.vcf.gz
+
+    # Step 1b：拆開後，這個樣本沒有帶的 allele 會變成一筆 GT 0/0（2026-09，VAL-10：CYP21A2 targeted caller
+    #   的 C>G,A 2/2 → C>G 0/0 + C>A 1/1，報告多出一列 ZYGOSITY=ref 的 c.293-13C>G）。非 chrM 只留有 ALT 的：
+    #   GT="alt" 留 0/1、1/1、單套 1…，丟 0/0、./.、單套 0、半缺失 ./1 —— 與 NCKUH 用 CALLERS=NONE 擋掉的
+    #   是同一個定義（add_callers_tag.is_called）。chrM 全部保留（Mito module 自行判斷）。
+    bcftools view -i 'GT="alt" || CHROM="chrM" || CHROM="MT"' \\
+        ${sample_id}.split.vcf.gz -Oz -o ${sample_id}.norm.vcf.gz
+    echo "[ADD_DRAGEN_TAG] ${sample_id} 沒有 call 到 ALT 而丟棄（非 chrM）：\$(bcftools view -H -e 'GT="alt" || CHROM="chrM" || CHROM="MT"' ${sample_id}.split.vcf.gz | wc -l)" >&2
     tabix -p vcf ${sample_id}.norm.vcf.gz
 
     # Step 2：add_dragen_tag.py（吃正規化後的 biallelic VCF）
@@ -87,7 +95,7 @@ process ADD_DRAGEN_TAG {
     bcftools stats ${sample_id}.mito_for_annotation.vcf.gz | grep "^SN" >&2
 
     # 清理暫時檔
-    rm -f ${sample_id}.snv_raw.vcf ${sample_id}.mito_raw.vcf
+    rm -f ${sample_id}.snv_raw.vcf ${sample_id}.mito_raw.vcf ${sample_id}.split.vcf.gz
     """
 }
 

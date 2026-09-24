@@ -1998,24 +1998,42 @@ ACMG 計分，只影響顯示／GUI 篩選。
 **重跑確認（修正 1、2 生效）**：
 - LOST 的 23 個區段在新報告裡都有 PASS 紀錄（部分與相鄰 PASS 合成，如 RHCE `25406465` COMBINED=3、`25406867`
   COMBINED=7）；ABSORBED 例 `chr1:12373122` 回到單純的 `TGC>T`。`snv_for_annotation` 4,982,696 筆。
-- 找回的紀錄多為內含子／基因間；但包含 `chr6:32039081 C>G`（CYP21A2 `NM_000500.9:c.293-13C>G`，即 CAH 常見的
-  In2G，DRAGEN CYP21A2 targeted caller 的 `TARGETED;Recombinant` 紀錄）—— 舊版報告沒有它。ACMG_CLASS 為 VUS
-  （本分類器不用 ClinVar 計分），判讀請看 `CLINVAR_SIG`。
+- 找回的紀錄多為內含子／基因間。其中 `chr6:32039081`（CYP21A2 c.293-13，In2G 的位置）是 DRAGEN CYP21A2 targeted
+  caller 的 `C>G,A` **`2/2`** —— 樣本是 A/A（`c.293-13C>A`，Benign），**沒有帶 In2G**。`norm -m -any` 拆開後多出一筆
+  `C>G` GT `0/0`，報告顯示成 `ZYGOSITY=ref` 的 c.293-13C>G（ClinVar Conflicting）—— 這是假列，由修正 4 移除。
+  （這裡一度被誤判成「找回 In2G」，已更正。）
 - ZYGOSITY：chrX het 100,149 列、hom 80,468 列、沒有 hemizygous；chrY 0。
 - `AD_DRAGEN` 缺值 94 筆 = DRAGEN targeted caller 的紀錄（RHCE 的 PASS 紀錄 FORMAT 只有 `GT:GQ`；CYP21A2、RHCE
   gene conversion 等 `TARGETED` 紀錄沒有 AD），不是 pipeline 的問題。合成紀錄中缺 AD 的從 84 降到 14（都在 RHCE）：
   舊版 targeted caller 的 PASS 紀錄與 small variant caller 的 `TargetedConflict` 重複紀錄同叢、以前者為 anchor；
   修正 1 拿掉 TargetedConflict 後它們多半不再合成。
 
-**待評估：未 phase 的重疊 het 被當成同一條單體**（與 FILTER 無關，PASS+PASS 與 NCKUH 也適用）
-- VAL-10（修正 1 之後）：104,277 個會出報告的合成中，**9,299 個**是 phase 未知的 het 因重疊被合成。
-- combine 的規則是「足跡重疊一律合」，未 phase（或不同 PS）的 het 在 `reconstruct()` 裡依 GT 位置都落在同一條
-  單體 → 寫成一個 `0|1` 的 MNV 並給 PS。但兩個重疊的 het 缺失不可能同在一條單體上（VAL-10 例：
-  `chr4:115927671 CTGT>C 0/1` + `chr4:115927673 GTTT>G 0/1`），較可能是 trans 或其中一個是假的；toy 重現會寫成
-  兩個 caller 都沒 call 的 5 bp 缺失 `CTGTTT>C 0|1`。
-- 診斷腳本加了 `UNPHASED` 計數（只算會出報告的合成、非 chrM）與 `--pass-only`（模擬修正後的 COMBINE_DRAGEN）。
-  看 VAL-10 的數字再決定是否改成「未 phase 的重疊 het 不合、原封交給 norm」—— 要改 `combine_phased.py`
-  （兩個 repo），並會影響沒有 PS 的 compound。
+**修正 3：phase 未知、或重疊互相矛盾的叢集不合成（`combine_phased.py`，二級三級同一支）**
+- 問題：「足跡重疊一律合」＋ 未 phase（或不同 PS）的 het 在 `reconstruct()` 裡依 GT 位置都落在同一條單體。
+  診斷腳本（`--pass-only`，數字與新的 COMBINE_DRAGEN stderr `in=5006395 merged_clusters=104277
+  passthrough_clusters=20267` 完全一致）把 104,277 個會出報告的合成分類：
+
+  | | 完整寫出 | 截斷／併出新 allele | allele 消失 |
+  |---|---|---|---|
+  | phase 已知 | 94,878 | 10 | 88 |
+  | phase 未知 | 1,096 | 1,425 | 6,778 |
+
+  **7,927 個 PASS allele 在合成時消失**（缺失範圍內的 SNV、包在大缺失裡的小缺失，如 `chr1:1746439 GA>G` +
+  `1746440 A>G`、`chr1:3002032` 80 bp 缺失吃掉 5 個 phased 變異）；1,435 叢寫出沒人 call 的 allele（`chr4:115927671`
+  兩個缺失併成 5 bp、`chr1:2112691` 插入被截斷）。
+- 修法（詳見二級大補帖 7.6.2）：≥2 顆 het 不在同一個 phase set → 不合；重疊只准落在沒改變的錨定鹼基，否則
+  `RebuildConflict` → 整叢原封通過；同一 POS 先套 SNV 再套 indel。stderr 加 `phase_unknown=` `overlap_conflict=`。
+  unphased 但乾淨的 del+ins（1,096 叢）也不合（沒有 PS 無法確定 cis）。測試 26 個（新 7 個舊版全失敗）。
+- 重跑預期：`merged_clusters` 約 9.49 萬、`phase_unknown` ≈ 9,300、`overlap_conflict` ≤ 約 100；
+  被吃掉的約 7,900 個 PASS 變異以原始紀錄回到報告。
+
+**修正 4：`ADD_DRAGEN_TAG` 丟掉拆多等位後樣本沒帶的 allele**
+- 問題：DRAGEN 的多等位紀錄（如 targeted caller 的 `C>G,A 2/2`）經 `norm -m -any` 拆開後，樣本沒帶的 allele 變成一筆
+  GT `0/0`；三級 DRAGEN 路徑沒有像 NCKUH 的 `CALLERS=NONE` 那樣擋掉它，於是報告出現 `ZYGOSITY=ref` 的假列。
+- 修法：norm 之後非 chrM 只留 `GT="alt"`（留 `0/1`、`1/1`、單套 `1`；丟 `0/0`、`./.`、單套 `0`、半缺失 `./1`，與
+  `add_callers_tag.is_called()` 同一定義）；chrM 全部保留。stderr 印出丟棄筆數。toy 實測：`2/2` → `0/0`（丟）+ `1/1`（留）、
+  `0/2` → `0/0`（丟）+ `0/1`（留）。
+- 重跑後檢查：`awk -F'\t' -v z=$(col ZYGOSITY) 'NR>1 && ($z=="ref" || $z=="unknown")' $TSV | wc -l` 應為 0。
 
 **修正 2：ZYGOSITY 依 GT 的套數判斷（`infer_zygosity()`）**
 - 問題：舊版在 chrX/chrY 上只要兩個 allele 都是 ALT 就標 `hemizygous` → VAL-10 女性 chrX 的 `1/1`、`1|1`
