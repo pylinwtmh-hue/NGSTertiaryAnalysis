@@ -1988,6 +1988,21 @@ ACMG 計分，只影響顯示／GUI 篩選。
   舊版 SNV 消失，新版回來；PASS 缺失 + non-PASS SNV：舊版輸出含 SNV 的 MNV，新版只有 PASS 缺失；
   PASS+PASS 仍合成；chrM 輸出與舊版相同。量化用的唯讀腳本 `diag_dragen_combine_filter.py`（重現 combine 的
   叢集與合成判斷，40 組隨機資料的 merged / passthrough / nocall 數與 combine 的 stderr 完全一致）。
+- VAL-10 實測（舊版行為，5,024,145 筆）：merged 104,619 叢，其中 **LOST 23 叢／35 筆 PASS 被丟**、
+  **ABSORBED 120 叢／131 筆 non-PASS 被併入**、全 non-PASS 230 叢、chrM 混叢 0。三種 FILTER：
+  `TargetedConflict`（集中在 chr1:25.40 Mb RHCE；同一位置常有一般 caller 的 `1/1` PASS 與 targeted caller 的
+  `1|1` TargetedConflict 兩筆 —— ABSORBED 多為這種同一 allele 的重複，合成後結果不變；但 targeted caller 的
+  缺失當 anchor 時會帶走 3–7 個 PASS SNV）、`LowDepth`（chr1:122–123 Mb；SNV 等寬時 anchor 取最左那筆）、
+  `MosaicLowAF`（低 AF indel 與 PASS het 重疊 → PASS 被丟，或 `chr1:12373122 TGC>T` 被拼進 13 個 T 的插入）。
+
+**待評估：未 phase 的重疊 het 被當成同一條單體**（與 FILTER 無關，PASS+PASS 與 NCKUH 也適用）
+- combine 的規則是「足跡重疊一律合」，未 phase（或不同 PS）的 het 在 `reconstruct()` 裡依 GT 位置都落在同一條
+  單體 → 寫成一個 `0|1` 的 MNV 並給 PS。但兩個重疊的 het 缺失不可能同在一條單體上（VAL-10 例：
+  `chr4:115927671 CTGT>C 0/1` + `chr4:115927673 GTTT>G 0/1`），較可能是 trans 或其中一個是假的；toy 重現會寫成
+  兩個 caller 都沒 call 的 5 bp 缺失 `CTGTTT>C 0|1`。
+- 診斷腳本加了 `UNPHASED` 計數（只算會出報告的合成、非 chrM）與 `--pass-only`（模擬修正後的 COMBINE_DRAGEN）。
+  看 VAL-10 的數字再決定是否改成「未 phase 的重疊 het 不合、原封交給 norm」—— 要改 `combine_phased.py`
+  （兩個 repo），並會影響沒有 PS 的 compound。
 
 **修正 2：ZYGOSITY 依 GT 的套數判斷（`infer_zygosity()`）**
 - 問題：舊版在 chrX/chrY 上只要兩個 allele 都是 ALT 就標 `hemizygous` → VAL-10 女性 chrX 的 `1/1`、`1|1`
