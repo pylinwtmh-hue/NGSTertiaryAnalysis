@@ -811,8 +811,7 @@ wc -l $CNV_DIR/${SAMPLE_ID}.cnv.annotated.tsv
 wc -l $CNV_DIR/${SAMPLE_ID}.sv.annotated.tsv
 
 # CNV：確認有 AnnotSV 分類欄位
-head -1 $CNV_DIR/${SAMPLE_ID}.cnv.annotated.tsv | tr '	' '
-' | grep -n "AnnotSV_ranking\|ACMG\|Pathogenic"
+head -1 $CNV_DIR/${SAMPLE_ID}.cnv.annotated.tsv | tr '\t' '\n' | grep -n "AnnotSV_ranking\|ACMG\|Pathogenic"
 
 # SV：確認 unannotated 筆數（沒有對應基因的 SV，通常為少數）
 wc -l $CNV_DIR/${SAMPLE_ID}.sv.unannotated.tsv
