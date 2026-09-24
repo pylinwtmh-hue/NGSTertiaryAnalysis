@@ -1952,3 +1952,50 @@ ACMG 計分，只影響顯示／GUI 篩選。
 
 剩下 2 個拆兩列的若要消除，要在二級 ensemble merge 前的 `norm` 加 `-f 參考序列`（左對齊），目前未做。
 粒線體（chrM）不動：ensemble 裡 chrM 的 het 仍會被 `+fixploidy` 截斷，實驗室以 `04_mito` 報告為準（2026-09 決定）。
+
+### VAL-10（女性、DRAGEN）重跑驗證 + 兩個修正（2026-09）
+
+**新版與迴歸（全部符合）**
+
+| 檢查 | 結果 |
+|------|------|
+| 欄位數 / `HAPLOID_HET` | 82 欄；5,940,563 列全為 `.` |
+| 合成紀錄最小化 / ALT 夾 `*` | 0 / 0 |
+| `AD_DV`（= AD_DRAGEN）有值 | 5,940,465 / 5,940,563（與 7 月相同） |
+| `CALLERS` | 全為 `DRAGEN` |
+| ploidy QC | declared `XX`、estimated `XX`、NDC 0.987–1.061、無警示 |
+| chrX GT（`snv_for_annotation`） | `0/1` 79,322、`1/1` 67,100、`0\|1` 7,335、`1\|1` 6,568、`1/0` 3,329、`1\|0` 506 —— 全為雙套 |
+| chrY | 0 筆 |
+| chrX STR | DMD 13/15、AR 23/25、ZIC3 10/10、SOX3 15/15、FMR1 30/31、AFF2 23/23（皆兩個 allele） |
+| PVS1 / ClinGen VCEP（列數） | `PVS1` 1、`PVS1_Strong` 2；94 列 |
+
+⚠️ 大補帖原本寫「實測 VAL-10：PVS1 40 / PVS1_Strong 5、ClinGen 77 筆」—— 那是 **NA12878 WES** 的數字
+（見上方 v3.6「驗證（NA12878 WES）」），已更正。VAL-10 沒有更早的 PVS1/ClinGen 基準可比。
+
+**待查**：`INFO/COMBINED` 的紀錄中有 84 筆 `AD_DRAGEN` 為 `.`（`AD_DV` 缺值的 98 列多半是它們）。合成紀錄的 AD
+繼承自 anchor（最寬的那筆），缺值代表 anchor 本身沒有 AD；要看來源確認是「整叢都沒有 AD」還是「anchor 沒有、
+其他成分有」（後者可改成優先挑有 AD 的 anchor）。
+
+**修正 1：`COMBINE_DRAGEN` 只拿 PASS 進 combine（非 chrM）**
+- 問題：combine 對整份 hard-filtered VCF 做，合成紀錄的 FILTER 沿用 anchor，`ADD_DRAGEN_TAG` 只收 PASS。
+  同一叢混了 PASS 和 non-PASS 時，anchor 是 non-PASS → 整筆被丟，原本會出報告的 PASS 變異跟著消失；
+  anchor 是 PASS → DRAGEN 濾掉的 allele 被拼進報告裡的 MNV（HGVS 跟著變）。7 月加入 DRAGEN combine 起就存在
+  （7/16 版合成紀錄一律寫 PASS → 只有後者；7/22 改沿用 anchor 的 FILTER 後兩種都有）。
+- 修法：combine 前 `bcftools view -i 'FILTER="PASS" || FILTER="." || CHROM="chrM" || CHROM="MT"'`。
+  non-PASS 本來就會在 `ADD_DRAGEN_TAG` 被丟，所以報告 = DRAGEN 的 PASS 集合，combine 只改變 PASS 變異的寫法。
+  chrM 全部保留、不動（依決定）。`combine_phased.py` 不用改（兩 repo md5 不變）。
+- 驗證：toy（non-PASS 3 bp 缺失 + 2 bp 外的 PASS SNV，同 PS）真的跑 `combine_phased.py` + `add_dragen_tag.py`：
+  舊版 SNV 消失，新版回來；PASS 缺失 + non-PASS SNV：舊版輸出含 SNV 的 MNV，新版只有 PASS 缺失；
+  PASS+PASS 仍合成；chrM 輸出與舊版相同。量化用的唯讀腳本 `diag_dragen_combine_filter.py`（重現 combine 的
+  叢集與合成判斷，40 組隨機資料的 merged / passthrough / nocall 數與 combine 的 stderr 完全一致）。
+
+**修正 2：ZYGOSITY 依 GT 的套數判斷（`infer_zygosity()`）**
+- 問題：舊版在 chrX/chrY 上只要兩個 allele 都是 ALT 就標 `hemizygous` → VAL-10 女性 chrX 的 `1/1`、`1|1`
+  （73,668 筆）全部顯示 hemizygous、一個 hom 都沒有；男性 PAR 的 `1/1` 同樣被標錯。只影響顯示（ACMG 計分不用 ZYGOSITY）。
+- 修法：單套 GT → `hemizygous`；雙套 `1/1` → `hom`、`1/2` → `het`、半缺失 `1/.` → `het`，性染色體與體染色體同規則。
+  套數已由 caller 依性別決定：NCKUH 男性非 PAR 經二級 `+fixploidy` 變單套（第一版就有），DRAGEN 男性非 PAR 本來就叫成單套。
+  二級性別未知（未做 `+fixploidy` 單套化）的男性，chrX 的 `1/1` 會顯示 hom。
+- 測試：`test_zygosity_sex_chromosomes_by_ploidy`（舊版會失敗）。
+
+**重跑**：修正 1 改的是 `COMBINE_DRAGEN` 的 script → 加 `-resume` 會從 COMBINE_DRAGEN 一路重跑到 ACMG，
+`PARSE_CSQ` 也會因輸入改變而重跑、用到新的 `parse_vep_csq.py`。

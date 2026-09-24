@@ -101,6 +101,12 @@ process ADD_DRAGEN_TAG {
 //   由 params.combine_phased 開關（預設 true）。chrM 多半無 PS，實質不受影響。
 //   ⚠️ combine_py 以 staged path input 傳入（不用 ${params.scripts_dir}/… 直呼），這樣 nextflow
 //      會對 script「內容」計 hash → 改了 script 後 -resume 會正確重跑，不會沿用舊快取（與二級一致）。
+//   ⚠️ 非 chrM 只拿 PASS 進 combine（2026-09）。合成紀錄的 FILTER 沿用 anchor（叢集內最寬那筆），
+//      而 ADD_DRAGEN_TAG 只收 PASS；舊版讓 non-PASS 也進叢集，PASS 與 non-PASS 同叢時：
+//        anchor 是 non-PASS → 整筆被丟掉，原本會出報告的 PASS 變異跟著消失；
+//        anchor 是 PASS     → DRAGEN 濾掉的 allele 被拼進報告裡的 MNV。
+//      non-PASS 本來就會在 ADD_DRAGEN_TAG 被丟掉，先濾掉不影響其他結果。chrM 全部保留（Mito module
+//      保留所有 FILTER，由臨床端自行篩選；依決定不動 chrM）。
 // ──────────────────────────────────────────────────────────────
 process COMBINE_DRAGEN {
 
@@ -117,9 +123,12 @@ process COMBINE_DRAGEN {
 
     script:
     """
+    # 非 chrM 只留 PASS（與 ADD_DRAGEN_TAG 的 PASS 判定一致：PASS 或 .）；chrM 全部保留。原因見上方 ⚠️。
+    bcftools view -i 'FILTER="PASS" || FILTER="." || CHROM="chrM" || CHROM="MT"' \\
+        ${dragen_vcf} -Oz -o ${sample_id}.dragen.pass.vcf.gz
     # combine_phased.py 只用 Python 標準庫，讀 (bgzip) VCF、自帶 faidx（讀 \${ref_fasta}.fai）。
     python3 ${combine_py} \\
-        --in ${dragen_vcf} \\
+        --in ${sample_id}.dragen.pass.vcf.gz \\
         --out ${sample_id}.dragen.combined.vcf \\
         --fasta ${params.ref_fasta} \\
         --max-gap ${params.combine_max_gap}
@@ -127,7 +136,7 @@ process COMBINE_DRAGEN {
     bcftools sort ${sample_id}.dragen.combined.vcf \\
         -Oz -o ${sample_id}.dragen.combined.vcf.gz
     bcftools index -t ${sample_id}.dragen.combined.vcf.gz
-    rm -f ${sample_id}.dragen.combined.vcf
+    rm -f ${sample_id}.dragen.combined.vcf ${sample_id}.dragen.pass.vcf.gz
     """
 }
 

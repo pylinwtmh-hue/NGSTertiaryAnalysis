@@ -1,9 +1,15 @@
 # 臨床三級分析 Pipeline 使用說明
 
-**版本：v3.7**
-**更新日期：2026-09-23**
+**版本：v3.8**
+**更新日期：2026-09-24**
 **負責人：林伯昱（p88124019@gs.ncku.edu.tw）**
 
+> v3.8 更新（VAL-10 女性 DRAGEN 驗證後的修正）：
+> - DRAGEN：`COMBINE_DRAGEN` 只拿 PASS 紀錄做 compound 合成（chrM 除外）。舊版連 non-PASS 一起合，
+>   合成紀錄沿用最寬那筆的 FILTER → 可能把 PASS 變異一起丟掉，或把 DRAGEN 濾掉的 allele 拼進報告。
+> - `ZYGOSITY` 看 GT 的套數：單套才是 `hemizygous`；性染色體上的雙套 `1/1`（女性 chrX、男性 PAR）是 `hom`
+>   （舊版一律標 `hemizygous`）。欄位不變，仍是 82 欄。
+>
 > v3.7 更新（VAL55 SUZ12 驗證後的修正）：
 > - NCKUH：兩個 caller 都沒有 ALT 的紀錄標成 `CALLERS=NONE`、**不進 annotation**（舊版標成 `HC`，
 >   報告會多出不存在的變異，例如 SUZ12 的 `c.2170del`）；AD 缺值保留 `.`（舊版補 0）。
@@ -345,7 +351,7 @@ nextflow -c /home/pipeline/tertiary_code/nextflow_tertiary.config \
 | CALLERS | `DV+HC` / `DV` / `HC`（NCKUH）或 `DRAGEN`。兩邊都沒 call 的 `NONE` 不會出現在表裡 |
 | DP_DV, AD_DV, VAF_DV | DeepVariant（DRAGEN 樣本為 DRAGEN）read depth、allelic depth、VAF。AD 的缺值是 `.`（例 `10,.` = 這個 caller 沒評估這個 allele），不是 0 |
 | DP_HC, AD_HC | HaplotypeCaller read depth、allelic depth（DRAGEN 無 HC，此二欄為空）|
-| ZYGOSITY | het / hom / hemizygous（由「真的 call 到 ALT」的那個 caller 的 GT 推導，與 CALLERS 一致；兩邊都有 call 時用 DV。正常不會出現 `ref` / `unknown`）|
+| ZYGOSITY | het / hom / hemizygous（由「真的 call 到 ALT」的那個 caller 的 GT 推導，與 CALLERS 一致；兩邊都有 call 時用 DV。`hemizygous` 只給單套 GT（男性 chrX 非 PAR、chrY）；女性 chrX 與男性 PAR 的 `1/1` 是 `hom`。正常不會出現 `ref` / `unknown`）|
 | GT_DV, GT_HC | Genotype（例：`0/1` het、`1/1` hom、`1` 單套 hemizygous、`0/0` 沒有這個變異、`./.` 沒判定；`\|` 表示已 phase）|
 
 #### Strand bias（欄 24）
@@ -745,10 +751,12 @@ awk -F'\t' -v c=$(col ACMG_CLASS) 'NR>1 && ($c=="Pathogenic" || $c=="Likely_Path
 
 echo ""
 echo "========================================="
-echo "Step 8（NCKUH）：ZYGOSITY 與 HAPLOID_HET"
-echo "（ZYGOSITY 只應有 het/hom/hemizygous；HAPLOID_HET 只會出現在男性 chrX）"
+echo "Step 8：ZYGOSITY 與 HAPLOID_HET"
+echo "（ZYGOSITY 只應有 het/hom/hemizygous；hemizygous 只在男性 chrX 非 PAR / chrY（女性應為 0）；"
+echo "  HAPLOID_HET 只會出現在 NCKUH 男性 chrX）"
 echo "========================================="
 awk -F'\t' -v c=$(col ZYGOSITY) 'NR>1 {print $c}' $TSV | sort | uniq -c | sort -rn
+awk -F'\t' -v c=$(col ZYGOSITY) 'NR>1 && $c=="hemizygous" {print $1}' $TSV | sort | uniq -c
 awk -F'\t' -v c=$(col HAPLOID_HET) 'NR>1 && $c!="." {print $1, $c}' $TSV | sort | uniq -c
 
 echo ""
@@ -824,6 +832,15 @@ SAMPLE_ID=VAL-10
 cat /home/pipeline/tertiary_output/${SAMPLE_ID}/00_prepare/${SAMPLE_ID}.ploidy_qc.txt
 # 預期：estimated_sex_karyotype 與 samplesheet 宣告一致 → sex_check: OK
 # 每條 contig 的 NDC 應 ~1.0；偏離過多的 contig 會列在 WARNINGS（疑似非整倍體，需人工確認）
+# ⚠️ sex_check 比的是 DRAGEN ploidy.vcf 內的 declared 與 estimated；declared 是 unknown 時一律 OK，
+#    所以 estimated 這行請再對一次臨床性別，並用下面三項交叉核對。
+
+# 性別交叉核對（VAL-10 女性實測：chrX 全為雙套、chrY 0 筆、chrX STR 皆兩個 allele）
+V=/home/pipeline/tertiary_output/${SAMPLE_ID}/00_prepare/${SAMPLE_ID}.snv_for_annotation.vcf.gz
+bcftools query -r chrX -f '[%GT]\n' $V | sort | uniq -c | sort -rn   # 女性：0/1、1/1…（雙套）；男性：非 PAR 為單套 1
+bcftools view -H -r chrY $V | wc -l                                   # 女性：0 或極少
+awk -F'\t' 'NR==1 || $1=="chrX"' /home/pipeline/tertiary_output/${SAMPLE_ID}/05_str/${SAMPLE_ID}.str.tsv \
+    | cut -f1,2,5,9,10                                                # 女性：REPCN_A2 有值；男性為 .
 ```
 
 ### PGx 輸出確認
@@ -873,6 +890,13 @@ grep "MT-RNR1" $PGX_DIR/${SAMPLE_ID}.pgx.tsv | cut -f3,4,13,14,15
 # 臨床警示
 echo "--- B*57:01 / B*58:01 ---"
 grep "HLA-B" $PGX_DIR/${SAMPLE_ID}.pgx.tsv | cut -f3,4,6 | head -3
+
+# DRAGEN 樣本：與 DRAGEN 原生 PGx 判讀的一致性（以基因計；pgx.tsv 一個基因有多列，不要直接數列數）
+echo "--- DRAGEN 交叉註記 ---"
+awk -F'\t' 'NR==1{for(i=1;i<=NF;i++){if($i=="GENE")g=i; if($i=="NOTES")n=i}; next}
+    match($n, /DRAGEN (一致|不一致|未比對)/){print $g "\t" substr($n, RSTART, RLENGTH)}' \
+    $PGX_DIR/${SAMPLE_ID}.pgx.tsv | sort -u
+# VAL-10（2026-07）：一致 10、不一致 2（CYP2D6 結構型排列、DPYD）
 ```
 
 > **PGx 結果解讀：** HLA-B `*57:01 negative` 表示無 abacavir 過敏風險；`*58:01 negative` 表示無 allopurinol 嚴重過敏風險；`*15:02 negative` 表示無 carbamazepine 嚴重皮膚反應風險。這三個是台灣臨床最常用的 CPIC Level A HLA 警示。

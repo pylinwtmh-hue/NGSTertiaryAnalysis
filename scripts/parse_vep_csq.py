@@ -189,22 +189,27 @@ def infer_zygosity(gt_dv: str, gt_hc: str, chrom: str) -> str:
     if gt in (".", "./.", ".|.", ""):
         return "unknown"
     gt_norm = gt.replace("|", "/")
+    slots = gt_norm.split("/")          # GT 的套數：1 = 單套（haploid），2 = 雙套
     # 去掉 missing allele（拆分多等位基因後可能出現半缺失，如 1/.）
-    called = [a for a in gt_norm.split("/") if a != "."]
+    called = [a for a in slots if a != "."]
     if not called:
         return "unknown"
     is_sex = chrom in ("chrX", "chrY", "X", "Y")
     alt_alleles = [a for a in called if a != "0"]
     if not alt_alleles:
         return "ref"
-    # haploid 或拆分後只剩單一有效 allele（例如 1/. → 該 ALT 僅一份）
-    if len(called) == 1:
+    # 單套 GT（男性 chrX 非 PAR、chrY）→ hemizygous。
+    # ⚠️ 套數看 GT 本身、不看染色體（2026-09）：舊版在 chrX/chrY 上只要兩個 allele 都是 ALT 就標
+    #   hemizygous → 女性 chrX 與男性 PAR 的 1/1 都被標成 hemizygous（VAL-10 女性的 chrX 一個 hom 都沒有）。
+    #   套數已寫在 GT 裡：NCKUH 男性非 PAR 經二級 +fixploidy 變單套；DRAGEN 男性非 PAR 本來就叫成單套。
+    #   所以性染色體上的雙套 GT = 女性、PAR 或性別未知 → 與體染色體同一套規則。
+    if len(slots) == 1:
         return "hemizygous" if is_sex else "het"
-    # 二倍體且兩個都是 ALT
+    # 雙套但另一個 allele 缺失（半缺失，如 1/.）→ 只知道有一份 ALT → het
+    if len(called) == 1:
+        return "het"
+    # 雙套且兩個都是 ALT：1/1（相同 ALT）→ hom；1/2（不同 ALT，複合雜合）→ het
     if "0" not in called:
-        if is_sex:
-            return "hemizygous"
-        # 1/1（相同 ALT）→ hom；1/2（不同 ALT，複合雜合）→ het
         return "hom" if len(set(alt_alleles)) == 1 else "het"
     # 一 ref 一 alt
     return "het"

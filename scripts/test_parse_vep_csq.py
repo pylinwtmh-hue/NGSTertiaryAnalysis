@@ -10,7 +10,8 @@ Thresholds follow GATK convention (SNV FS>60/SOR>3.0; indel FS>200/SOR>10.0).
 DeepVariant-only sites lack FS/SOR -> "." (manual review).
 
 Also pins infer_zygosity(): ZYGOSITY comes from the GT of the caller that actually
-called an ALT (same rule as CALLERS), DV first when both did.
+called an ALT (same rule as CALLERS), DV first when both did; on chrX/chrY only a
+haploid GT is "hemizygous" (a diploid 1/1 there is a female, PAR or unknown-sex call).
 
 And haploid_het_callers(): the HAPLOID_HET review column (male chrX non-PAR calls that
 were heterozygous before +fixploidy) keeps only callers that called this record.
@@ -80,6 +81,20 @@ def test_zygosity_unchanged_cases():
     _eq("neither called, all missing -> unknown", P.infer_zygosity("./.", "./.", "chr1"), "unknown")
 
 
+def test_zygosity_sex_chromosomes_by_ploidy():
+    # Regression: any chrX/chrY record with two ALT alleles was "hemizygous", so a female's
+    # chrX 1/1 (and a male PAR 1/1) were reported as hemizygous (VAL-10: no chrX hom at all).
+    _eq("female chrX 1/1 -> hom (was hemizygous)", P.infer_zygosity("1/1", ".", "chrX"), "hom")
+    _eq("female chrX 1|1 -> hom (was hemizygous)", P.infer_zygosity("1|1", ".", "chrX"), "hom")
+    _eq("male PAR 1/1 (diploid) -> hom", P.infer_zygosity("1/1", "1/1", "chrX"), "hom")
+    _eq("female chrX 0/1 -> het", P.infer_zygosity("0/1", ".", "chrX"), "het")
+    _eq("chrX 1/2 -> het (was hemizygous)", P.infer_zygosity("1/2", ".", "chrX"), "het")
+    _eq("chrX half-missing 1/. -> het (was hemizygous)", P.infer_zygosity("1/.", ".", "chrX"), "het")
+    _eq("male non-PAR haploid 1 -> hemizygous", P.infer_zygosity("1", "1", "chrX"), "hemizygous")
+    _eq("male chrY haploid 1 -> hemizygous", P.infer_zygosity("1", ".", "chrY"), "hemizygous")
+    _eq("haploid 0 with no ALT anywhere -> ref (fallback)", P.infer_zygosity("0", ".", "chrX"), "ref")
+
+
 def test_haploid_het_column():
     # INFO/HAPLOID_HET (secondary haploid_het.awk) narrowed to the callers that called this record
     _eq("both flagged, both called", P.haploid_het_callers("DV,HC", "DV+HC"), "DV,HC")
@@ -101,5 +116,6 @@ if __name__ == "__main__":
     test_column_registered()
     test_zygosity_uses_the_caller_that_called()
     test_zygosity_unchanged_cases()
+    test_zygosity_sex_chromosomes_by_ploidy()
     test_haploid_het_column()
     print("\nALL TESTS PASSED")
