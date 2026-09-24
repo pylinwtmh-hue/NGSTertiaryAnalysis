@@ -1995,7 +1995,20 @@ ACMG 計分，只影響顯示／GUI 篩選。
   缺失當 anchor 時會帶走 3–7 個 PASS SNV）、`LowDepth`（chr1:122–123 Mb；SNV 等寬時 anchor 取最左那筆）、
   `MosaicLowAF`（低 AF indel 與 PASS het 重疊 → PASS 被丟，或 `chr1:12373122 TGC>T` 被拼進 13 個 T 的插入）。
 
+**重跑確認（修正 1、2 生效）**：
+- LOST 的 23 個區段在新報告裡都有 PASS 紀錄（部分與相鄰 PASS 合成，如 RHCE `25406465` COMBINED=3、`25406867`
+  COMBINED=7）；ABSORBED 例 `chr1:12373122` 回到單純的 `TGC>T`。`snv_for_annotation` 4,982,696 筆。
+- 找回的紀錄多為內含子／基因間；但包含 `chr6:32039081 C>G`（CYP21A2 `NM_000500.9:c.293-13C>G`，即 CAH 常見的
+  In2G，DRAGEN CYP21A2 targeted caller 的 `TARGETED;Recombinant` 紀錄）—— 舊版報告沒有它。ACMG_CLASS 為 VUS
+  （本分類器不用 ClinVar 計分），判讀請看 `CLINVAR_SIG`。
+- ZYGOSITY：chrX het 100,149 列、hom 80,468 列、沒有 hemizygous；chrY 0。
+- `AD_DRAGEN` 缺值 94 筆 = DRAGEN targeted caller 的紀錄（RHCE 的 PASS 紀錄 FORMAT 只有 `GT:GQ`；CYP21A2、RHCE
+  gene conversion 等 `TARGETED` 紀錄沒有 AD），不是 pipeline 的問題。合成紀錄中缺 AD 的從 84 降到 14（都在 RHCE）：
+  舊版 targeted caller 的 PASS 紀錄與 small variant caller 的 `TargetedConflict` 重複紀錄同叢、以前者為 anchor；
+  修正 1 拿掉 TargetedConflict 後它們多半不再合成。
+
 **待評估：未 phase 的重疊 het 被當成同一條單體**（與 FILTER 無關，PASS+PASS 與 NCKUH 也適用）
+- VAL-10（修正 1 之後）：104,277 個會出報告的合成中，**9,299 個**是 phase 未知的 het 因重疊被合成。
 - combine 的規則是「足跡重疊一律合」，未 phase（或不同 PS）的 het 在 `reconstruct()` 裡依 GT 位置都落在同一條
   單體 → 寫成一個 `0|1` 的 MNV 並給 PS。但兩個重疊的 het 缺失不可能同在一條單體上（VAL-10 例：
   `chr4:115927671 CTGT>C 0/1` + `chr4:115927673 GTTT>G 0/1`），較可能是 trans 或其中一個是假的；toy 重現會寫成
